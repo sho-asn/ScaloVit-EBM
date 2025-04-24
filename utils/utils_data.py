@@ -24,28 +24,39 @@ def split_data(data: np.ndarray, train_ratio: float=0.6, valid_ratio: float=0.2)
 
     return train_data, valid_data, test_data
 
-def get_norm_param(x: np.ndarray) -> Dict[str, np.ndarray]:
-    keys = ['x_min','x_max','x_mean','x_std']
-    norm_param: Dict = {}
-    for key in keys: 
-        norm_param[key] = []
-    
-    norm_param['x_min']  = np.min(x, axis=0)
-    norm_param['x_max']  = np.max(x, axis=0)
-    norm_param['x_mean'] = np.mean(x, axis=0)
-    norm_param['x_std']  = np.std(x, axis=0)
+def MinMaxScaler(data, return_scalers=False):
+    """Min Max normalizer.
 
-    return norm_param
+    Args:
+      - data: original data
 
-def normalize(x: np.ndarray, norm_param: Dict[str, np.ndarray], method: str) -> np.ndarray: 
-    if method == 'minmax':
-        x_norm = (x - norm_param['x_min']) / (norm_param['x_max'] - norm_param['x_min'])
-    elif method == 'standardize':
-        x_norm = (x - norm_param['x_mean']) / norm_param['x_std']
-    else:
-        raise TypeError("Normalization method not known")
-    
-    return x_norm
+    Returns:
+      - norm_data: normalized data
+    """
+    min = np.min(data, 0)
+    max = np.max(data, 0)
+    numerator = data - np.min(data, 0)
+    denominator = np.max(data, 0) - np.min(data, 0)
+    norm_data = numerator / (denominator + 1e-7)
+    if return_scalers:
+        return norm_data, min, max
+    return norm_data
+
+
+def MinMaxArgs(data, min, max):
+    """
+    Args:
+        data: given data
+        min: given min value
+        max: given max value
+
+    Returns:
+        min-max scaled data by given min and max
+    """
+    numerator = data - min
+    denominator = max - min
+    norm_data = numerator / (denominator + 1e-7)
+    return norm_data
 
 def plot_signal(data: np.ndarray, save_path: Path|None = None):
     num_features = data.shape[1]
@@ -76,11 +87,9 @@ if __name__ == "__main__":
     train_t3, valid_t3, test_t3 = split_data(data=data_t3, train_ratio=0.6, valid_ratio=0.2)
 
     # Normalization
-    norm_param_train = get_norm_param(train_t1)
-    norm_method = "minmax"
-    X_train_norm = normalize(train_t1, norm_param_train, norm_method)
-    X_valid_norm = normalize(valid_t1, norm_param_train, norm_method)
-    X_test_norm = normalize(test_t1, norm_param_train, norm_method)
+    X_train_norm = MinMaxScaler(train_t1)
+    X_valid_norm = MinMaxScaler(valid_t1)
+    X_test_norm = MinMaxScaler(test_t1)
 
     plot_signal(X_valid_norm, 
-                save_path=Path("..")/"results"/"plots"/"train_norm_signal_plot.pdf")
+                save_path=Path("..")/"results"/"plots"/"valid_norm_signal_plot.pdf")
