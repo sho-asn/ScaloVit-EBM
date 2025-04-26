@@ -79,17 +79,17 @@ def plot_signal(data: np.ndarray, save_path: Path|None = None):
     plt.show()
 
 
-if __name__ == "__main__":
-    data_dir = Path("..")/"Datasets"/"CVACaseStudy"/"MFP"/"Training.mat"
-    data_t1, data_t2, data_t3 = load_mat_data(data_dir, ["T1", "T2", "T3"])
-    train_t1, valid_t1, test_t1 = split_data(data=data_t1, train_ratio=0.6, valid_ratio=0.2)
-    train_t2, valid_t2, test_t2 = split_data(data=data_t2, train_ratio=0.6, valid_ratio=0.2)
-    train_t3, valid_t3, test_t3 = split_data(data=data_t3, train_ratio=0.6, valid_ratio=0.2)
+# if __name__ == "__main__":
+#     data_dir = Path("..")/"Datasets"/"CVACaseStudy"/"MFP"/"Training.mat"
+#     data_t1, data_t2, data_t3 = load_mat_data(data_dir, ["T1", "T2", "T3"])
+#     train_t1, valid_t1, test_t1 = split_data(data=data_t1, train_ratio=0.6, valid_ratio=0.2)
+#     train_t2, valid_t2, test_t2 = split_data(data=data_t2, train_ratio=0.6, valid_ratio=0.2)
+#     train_t3, valid_t3, test_t3 = split_data(data=data_t3, train_ratio=0.6, valid_ratio=0.2)
 
-    # Normalization
-    X_train_norm = MinMaxScaler(train_t1)
-    X_valid_norm = MinMaxScaler(valid_t1)
-    X_test_norm = MinMaxScaler(test_t1)
+#     # Normalization
+#     X_train_norm = MinMaxScaler(train_t1)
+#     X_valid_norm = MinMaxScaler(valid_t1)
+#     X_test_norm = MinMaxScaler(test_t1)
 
-    plot_signal(X_valid_norm, 
-                save_path=Path("..")/"results"/"plots"/"valid_norm_signal_plot.pdf")
+#     plot_signal(X_valid_norm, 
+#                 save_path=Path("..")/"results"/"plots"/"valid_norm_signal_plot.pdf")
