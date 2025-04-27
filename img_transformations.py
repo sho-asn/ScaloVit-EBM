@@ -134,7 +134,7 @@ class STFTEmbedder(TsImgEmbedder):
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.min_real, self.max_real, self.min_imag, self.max_imag = None, None, None, None
-
+    
     def cache_min_max_params(self, train_data: torch.Tensor) -> None:
         """
         Args:
@@ -142,12 +142,26 @@ class STFTEmbedder(TsImgEmbedder):
         this function initializes the min and max values for the real and imaginary parts.
         we'll use this function only once, before the training loop starts.
         """
+        # stft_transform output shape: (B, K, Freq, Time)
         real, imag = self.stft_transform(train_data)
-        # compute and cache min and max values
-        real, min_real, max_real = MinMaxScaler(real.numpy(), True)
-        imag, min_imag, max_imag = MinMaxScaler(imag.numpy(), True)
-        self.min_real, self.max_real = torch.Tensor(min_real), torch.Tensor(max_real)
-        self.min_imag, self.max_imag = torch.Tensor(min_imag), torch.Tensor(max_imag)
+
+        # Calculate min/max for each (feature, frequency) bin across Batch (dim 0) and Time (dim 3)
+        # We reduce over dims 0 and 3 to get shape (K, Freq)
+        min_real = torch.min(real, dim=3, keepdim=False)[0] # Reduce Time -> (B, K, Freq)
+        min_real = torch.min(min_real, dim=0, keepdim=False)[0] # Reduce Batch -> (K, Freq)
+
+        max_real = torch.max(real, dim=3, keepdim=False)[0] 
+        max_real = torch.max(max_real, dim=0, keepdim=False)[0] 
+
+        min_imag = torch.min(imag, dim=3, keepdim=False)[0] 
+        min_imag = torch.min(min_imag, dim=0, keepdim=False)[0] 
+
+        max_imag = torch.max(imag, dim=3, keepdim=False)[0] 
+        max_imag = torch.max(max_imag, dim=0, keepdim=False)[0]
+
+        # Store the calculated min/max tensors (shape: K, Freq)
+        self.min_real, self.max_real = min_real.to(self.device), max_real.to(self.device)
+        self.min_imag, self.max_imag = min_imag.to(self.device), max_imag.to(self.device)
 
     def stft_transform(self, data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -160,16 +174,25 @@ class STFTEmbedder(TsImgEmbedder):
         spec = T.Spectrogram(n_fft=self.n_fft, hop_length=self.hop_length, center=True, power=None).to(data.device)
         transformed_data = spec(data)
         return transformed_data.real, transformed_data.imag
-
+    
     def ts_to_img(self, signal: torch.Tensor) -> torch.Tensor:
         assert self.min_real is not None, "use init_norm_args() to compute scaling arguments"
         # convert to complex spectrogram
+        # signal shape: (B, L, K)
+        # real, imag shape: (B, K, Freq, Time)
         real, imag = self.stft_transform(signal)
-        # MinMax scaling
-        real = (MinMaxArgs(real, self.min_real.to(self.device), self.max_real.to(self.device)) - 0.5) * 2
-        imag = (MinMaxArgs(imag, self.min_imag.to(self.device), self.max_imag.to(self.device)) - 0.5) * 2
+
+        # Ensure min/max tensors have the correct shape for broadcasting against (B, K, Freq, Time)
+        # We need to unsqueeze them to (1, K, Freq, 1) for broadcasting
+        min_real_broadcast = self.min_real.unsqueeze(0).unsqueeze(-1) # -> (1, K, Freq, 1)
+        max_real_broadcast = self.max_real.unsqueeze(0).unsqueeze(-1) 
+        min_imag_broadcast = self.min_imag.unsqueeze(0).unsqueeze(-1)
+        max_imag_broadcast = self.max_imag.unsqueeze(0).unsqueeze(-1)
+        
+        real_norm = (MinMaxArgs(real, min_real_broadcast, max_real_broadcast) - 0.5) * 2
+        imag_norm = (MinMaxArgs(imag, min_imag_broadcast, max_imag_broadcast) - 0.5) * 2
         # stack real and imag parts
-        stft_out = torch.cat((real, imag), dim=1)
+        stft_out = torch.cat((real_norm, imag_norm), dim=1) # Concat on Feature dim
         return stft_out
 
     def img_to_ts(self, x_image: torch.Tensor) -> torch.Tensor:
