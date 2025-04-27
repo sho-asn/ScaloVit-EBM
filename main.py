@@ -18,9 +18,9 @@ print("Splitted chunk shape: ", train_t1_chunks.shape) # shape: (Batch, Length, 
 
 # Initialize embedder
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-seq_len = 64
+seq_len = chunk_size
 n_fft = 63
-hop_length = 23
+hop_length = 32
 embedder = STFTEmbedder(device, seq_len, n_fft, hop_length)
 real, imag = embedder.stft_transform(train_t1_tensor)
 
