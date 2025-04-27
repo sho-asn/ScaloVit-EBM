@@ -1,6 +1,6 @@
+import torch
 from pathlib import Path
 from typing import List, Tuple, Dict
-
 import numpy as np
 import scipy.io as scio
 import matplotlib.pyplot as plt
@@ -78,6 +78,17 @@ def plot_signal(data: np.ndarray, save_path: Path|None = None):
         plt.savefig(save_path, format="pdf")
     plt.show()
 
+def split_into_chunks(data: torch.Tensor, chunk_size: int) -> torch.Tensor:
+    batch_size, seq_len, features = data.shape
+    n_chunks = seq_len // chunk_size  # Number of full chunks
+
+    # Truncate the signal to a multiple of chunk_size
+    data = data[:, :n_chunks * chunk_size, :]
+
+    # Reshape
+    chunks = data.reshape(batch_size * n_chunks, chunk_size, features)
+
+    return chunks
 
 # if __name__ == "__main__":
 #     data_dir = Path("..")/"Datasets"/"CVACaseStudy"/"MFP"/"Training.mat"
