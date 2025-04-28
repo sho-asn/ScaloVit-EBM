@@ -96,7 +96,9 @@ def apply_bias(signal: torch.Tensor, magnitude: float) -> torch.Tensor:
 
 def apply_drift(signal: torch.Tensor, magnitude: float) -> torch.Tensor:
     drift = torch.linspace(0, magnitude, steps=signal.shape[0], device=signal.device)
-    return signal + drift.unsqueeze(-1)
+    if signal.ndim == 2:
+        drift = drift.unsqueeze(-1)
+    return signal + drift
 
 def apply_erratic(signal: torch.Tensor, noise_level: float) -> torch.Tensor:
     noise = torch.randn_like(signal) * noise_level
@@ -105,16 +107,78 @@ def apply_erratic(signal: torch.Tensor, noise_level: float) -> torch.Tensor:
 def apply_spike(signal: torch.Tensor, magnitude: float, num_spikes: int = 5) -> torch.Tensor:
     signal = signal.clone()
     time_steps = signal.shape[0]
-    feature_dim = signal.shape[1]
-    for _ in range(num_spikes):
-        t_idx = random.randint(0, time_steps - 1)
-        f_idx = random.randint(0, feature_dim - 1)
-        signal[t_idx, f_idx] += magnitude * (2 * torch.rand(1).item() - 1)  # Random + or -
+    if signal.ndim == 2:
+        feature_dim = signal.shape[1]
+        for _ in range(num_spikes):
+            t_idx = random.randint(0, time_steps - 1)
+            f_idx = random.randint(0, feature_dim - 1)
+            signal[t_idx, f_idx] += magnitude * (2 * torch.rand(1).item() - 1)
+    else:
+        for _ in range(num_spikes):
+            t_idx = random.randint(0, time_steps - 1)
+            signal[t_idx] += magnitude * (2 * torch.rand(1).item() - 1)
     return signal
 
 def apply_stuck(signal: torch.Tensor) -> torch.Tensor:
     stuck_value = signal[random.randint(0, signal.shape[0] - 1)]
-    return stuck_value.repeat(signal.shape[0], 1)
+    if signal.ndim == 2:
+        stuck_value = stuck_value.unsqueeze(0)
+        return stuck_value.repeat(signal.shape[0], 1)
+    else:
+        return stuck_value.repeat(signal.shape[0])
+
+def inject_anomalies(
+        signal: torch.Tensor,
+        fault_type: str,
+        batch_idx: Optional[int] = None,
+        magnitude: float = 0.10,
+        noise_level: float = 0.01,
+        selected_features: Optional[List[int]] = None,
+        stuck_probability: float = 1.0,
+        spike_num: int = 5) -> torch.Tensor:
+    """
+    Inject anomalies into a selected batch of the input signal.
+
+    Args:
+        signal: Tensor of shape (B, L, F)
+        fault_type: One of ['bias', 'drift', 'erratic', 'spike', 'stuck']
+        batch_idx: Which batch index to apply anomaly to. (Required)
+        magnitude: Size of bias, drift, or spike.
+        noise_level: Standard deviation for erratic noise.
+        selected_features: List of feature indices to apply fault. Default: all features.
+        stuck_probability: Probability for a feature to be stuck if 'stuck' fault.
+        spike_num: Number of spikes if 'spike' fault.
+
+    Returns:
+        Tensor with injected anomaly.
+    """
+    if batch_idx is None:
+        raise ValueError("batch_idx must be specified when using batch input.")
+
+    signal = signal.clone()
+
+    B, L, F = signal.shape
+
+    if not (0 <= batch_idx < B):
+        raise IndexError(f"batch_idx {batch_idx} is out of range for batch size {B}")
+
+    for f in range(F):
+        if (selected_features is None) or (f in selected_features):
+            if fault_type == "bias":
+                signal[batch_idx, :, f] = apply_bias(signal[batch_idx, :, f], magnitude)
+            elif fault_type == "drift":
+                signal[batch_idx, :, f] = apply_drift(signal[batch_idx, :, f], magnitude)
+            elif fault_type == "erratic":
+                signal[batch_idx, :, f] = apply_erratic(signal[batch_idx, :, f], noise_level)
+            elif fault_type == "spike":
+                signal[batch_idx, :, f] = apply_spike(signal[batch_idx, :, f], magnitude, spike_num)
+            elif fault_type == "stuck":
+                if random.random() < stuck_probability:
+                    signal[batch_idx, :, f] = apply_stuck(signal[batch_idx, :, f])
+            else:
+                raise ValueError(f"Unsupported fault type: {fault_type}")
+
+    return signal
 
 
 # if __name__ == "__main__":
