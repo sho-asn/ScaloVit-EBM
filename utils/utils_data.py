@@ -1,6 +1,7 @@
 import torch
+import random
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict
 import numpy as np
 import scipy.io as scio
 import matplotlib.pyplot as plt
@@ -89,6 +90,32 @@ def split_into_chunks(data: torch.Tensor, chunk_size: int) -> torch.Tensor:
     chunks = data.reshape(batch_size * n_chunks, chunk_size, features)
 
     return chunks
+
+def apply_bias(signal: torch.Tensor, magnitude: float) -> torch.Tensor:
+    return signal + magnitude
+
+def apply_drift(signal: torch.Tensor, magnitude: float) -> torch.Tensor:
+    drift = torch.linspace(0, magnitude, steps=signal.shape[0], device=signal.device)
+    return signal + drift.unsqueeze(-1)
+
+def apply_erratic(signal: torch.Tensor, noise_level: float) -> torch.Tensor:
+    noise = torch.randn_like(signal) * noise_level
+    return signal + noise
+
+def apply_spike(signal: torch.Tensor, magnitude: float, num_spikes: int = 5) -> torch.Tensor:
+    signal = signal.clone()
+    time_steps = signal.shape[0]
+    feature_dim = signal.shape[1]
+    for _ in range(num_spikes):
+        t_idx = random.randint(0, time_steps - 1)
+        f_idx = random.randint(0, feature_dim - 1)
+        signal[t_idx, f_idx] += magnitude * (2 * torch.rand(1).item() - 1)  # Random + or -
+    return signal
+
+def apply_stuck(signal: torch.Tensor) -> torch.Tensor:
+    stuck_value = signal[random.randint(0, signal.shape[0] - 1)]
+    return stuck_value.repeat(signal.shape[0], 1)
+
 
 # if __name__ == "__main__":
 #     data_dir = Path("..")/"Datasets"/"CVACaseStudy"/"MFP"/"Training.mat"
