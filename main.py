@@ -1,7 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
 from pathlib import Path
-from utils.utils_data import load_mat_data, split_data, split_into_chunks
+from utils.utils_data import load_mat_data, split_data, split_into_chunks, inject_anomalies
 from utils.utils_visualization import save_feature_plots_to_pdf
 from img_transformations import STFTEmbedder
 
@@ -12,9 +12,17 @@ train_t1, valid_t1, test_t1 = split_data(data_t1, train_ratio=0.6, valid_ratio=0
 train_t1_tensor = torch.tensor(train_t1, dtype=torch.float32).unsqueeze(0)  # shape: (Batch(1), Length, Feature)
 print("Input shape:", train_t1_tensor.shape)
 
-chunk_size = 128
+chunk_size = 1024
 train_t1_chunks = split_into_chunks(train_t1_tensor, chunk_size) 
 print("Splitted chunk shape: ", train_t1_chunks.shape) # shape: (Batch, Length, Feature)
+
+# Add anomaly
+# train_t1_chunks = inject_anomalies(train_t1_chunks, fault_type="bias", batch_idx=4, selected_features=[1]) # bias
+train_t1_chunks = inject_anomalies(train_t1_chunks, fault_type="drift", batch_idx=4, selected_features=[1]) # drift
+# train_t1_chunks = inject_anomalies(train_t1_chunks, fault_type="erratic", batch_idx=4, selected_features=[1]) # erratic
+# train_t1_chunks = inject_anomalies(train_t1_chunks, fault_type="spike", batch_idx=4, selected_features=[1]) # spike
+# train_t1_chunks = inject_anomalies(train_t1_chunks, fault_type="stuck", batch_idx=4, selected_features=[1]) # stuck
+
 
 # Initialize embedder
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,7 +43,7 @@ save_feature_plots_to_pdf(
     signal=train_t1_chunks,
     spectrogram=spectrograms,
     feature_idx=1,
-    pdf_path=Path("results")/"plots"/"spectrograms_full_f1_trainT1.pdf",
+    pdf_path=Path("results")/"plots"/"spectrograms_full_f1_trainT1_anomaly.pdf",
     vmin=-1,
     vmax=1
 )
