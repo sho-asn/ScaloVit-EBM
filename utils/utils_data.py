@@ -6,6 +6,9 @@ import numpy as np
 import scipy.io as scio
 import matplotlib.pyplot as plt
 
+from torch.utils.data import TensorDataset, DataLoader
+
+
 
 def load_mat_data(file_path: Path, variables: List[str]) -> List[np.ndarray]:
     """
@@ -90,6 +93,45 @@ def split_into_chunks(data: torch.Tensor, chunk_size: int) -> torch.Tensor:
     chunks = data.reshape(batch_size * n_chunks, chunk_size, features)
 
     return chunks
+
+
+def get_mfp_dataloader(
+        mat_file_path,
+        signal_key='T1',
+        chunk_size=1024,
+        batch_size=32,
+        split_ratios=(0.6, 0.2), # (train_ratio, valid_ratio)
+        shuffle=False,
+        num_workers=0,
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ):
+   
+    data_path = Path(mat_file_path)
+    T1, T2, T3 = load_mat_data(data_path, ["T1", "T2", "T3"])
+    if signal_key == "T1":
+        data = T1
+    elif signal_key == "T2":
+        data = T2
+    elif signal_key == "T3":
+        data = T3
+    train_data, valid_data, test_data = split_data(data, *split_ratios)
+    train_tensor = torch.tensor(train_data, dtype=torch.float32).unsqueeze(0)
+    valid_tensor = torch.tensor(valid_data, dtype=torch.float32).unsqueeze(0)
+    test_tensor  = torch.tensor(test_data,  dtype=torch.float32).unsqueeze(0)
+    train_chunks = split_into_chunks(train_tensor, chunk_size)
+    valid_chunks = split_into_chunks(valid_tensor, chunk_size)
+    test_chunks  = split_into_chunks(test_tensor,  chunk_size)
+    train_chunks = train_chunks.to(device)
+    valid_chunks = valid_chunks.to(device)
+    test_chunks  = test_chunks.to(device)
+
+    # Wrap in Datasets & Loaders
+    train_loader = DataLoader(TensorDataset(train_chunks), batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    valid_loader = DataLoader(TensorDataset(valid_chunks), batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    test_loader  = DataLoader(TensorDataset(test_chunks),  batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+
+    return train_loader, valid_loader, test_loader
+
 
 def apply_bias(signal: torch.Tensor, magnitude: float) -> torch.Tensor:
     return signal + magnitude
@@ -181,7 +223,7 @@ def inject_anomalies(
     return signal
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
 #     data_dir = Path("..")/"Datasets"/"CVACaseStudy"/"MFP"/"Training.mat"
 #     data_t1, data_t2, data_t3 = load_mat_data(data_dir, ["T1", "T2", "T3"])
 #     train_t1, valid_t1, test_t1 = split_data(data=data_t1, train_ratio=0.6, valid_ratio=0.2)
@@ -195,3 +237,13 @@ def inject_anomalies(
 
 #     plot_signal(X_valid_norm, 
 #                 save_path=Path("..")/"results"/"plots"/"valid_norm_signal_plot.pdf")
+    
+    # train_loader, valid_loader, test_loader = get_mfp_dataloader(
+    #     mat_file_path=Path("..")/"Datasets"/"CVACaseStudy"/"MFP"/"Training.mat",
+    #     signal_key="T1",
+    #     chunk_size=1024,
+    #     batch_size=32,
+    #     split_ratios=(0.6, 0.2)
+    # )
+    # for batch in train_loader:
+    #     print(batch[0].shape)
