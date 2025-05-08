@@ -96,41 +96,33 @@ def split_into_chunks(data: torch.Tensor, chunk_size: int) -> torch.Tensor:
 
 
 def get_mfp_dataloader(
-        mat_file_path,
-        signal_key='T1',
+        data_path, 
+        sensor="T1", 
+        split="train", 
         chunk_size=1024,
-        batch_size=32,
+        batch_size=32, 
         split_ratios=(0.6, 0.2), # (train_ratio, valid_ratio)
-        shuffle=False,
+        shuffle=False, 
         num_workers=0,
         device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ):
-   
-    data_path = Path(mat_file_path)
+
     T1, T2, T3 = load_mat_data(data_path, ["T1", "T2", "T3"])
-    if signal_key == "T1":
-        data = T1
-    elif signal_key == "T2":
-        data = T2
-    elif signal_key == "T3":
-        data = T3
-    train_data, valid_data, test_data = split_data(data, *split_ratios)
-    train_tensor = torch.tensor(train_data, dtype=torch.float32).unsqueeze(0)
-    valid_tensor = torch.tensor(valid_data, dtype=torch.float32).unsqueeze(0)
-    test_tensor  = torch.tensor(test_data,  dtype=torch.float32).unsqueeze(0)
-    train_chunks = split_into_chunks(train_tensor, chunk_size)
-    valid_chunks = split_into_chunks(valid_tensor, chunk_size)
-    test_chunks  = split_into_chunks(test_tensor,  chunk_size)
-    train_chunks = train_chunks.to(device)
-    valid_chunks = valid_chunks.to(device)
-    test_chunks  = test_chunks.to(device)
+    data_dict = {"T1": T1, "T2": T2, "T3": T3}
+    train_data, valid_data, test_data = split_data(data_dict[sensor], *split_ratios)
 
-    # Wrap in Datasets & Loaders
-    train_loader = DataLoader(TensorDataset(train_chunks), batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
-    valid_loader = DataLoader(TensorDataset(valid_chunks), batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
-    test_loader  = DataLoader(TensorDataset(test_chunks),  batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    if split == "train":
+        data = train_data
+    elif split == "valid":
+        data = valid_data
+    elif split == "test":
+        data = test_data
 
-    return train_loader, valid_loader, test_loader
+    data_tensor = torch.tensor(data, dtype=torch.float32).unsqueeze(0)
+    chunks = split_into_chunks(data_tensor, chunk_size)
+    chunks = chunks.to(device)
+    dataloader = DataLoader(TensorDataset(chunks), batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    return dataloader
 
 
 def apply_bias(signal: torch.Tensor, magnitude: float) -> torch.Tensor:
@@ -223,7 +215,7 @@ def inject_anomalies(
     return signal
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
 #     data_dir = Path("..")/"Datasets"/"CVACaseStudy"/"MFP"/"Training.mat"
 #     data_t1, data_t2, data_t3 = load_mat_data(data_dir, ["T1", "T2", "T3"])
 #     train_t1, valid_t1, test_t1 = split_data(data=data_t1, train_ratio=0.6, valid_ratio=0.2)
