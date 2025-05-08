@@ -82,7 +82,7 @@ train_loader = get_mfp_dataloader(
 embedder = STFTEmbedder(device=device, seq_len=chunk_size, n_fft=63, hop_length=32)
 init_stft_embedder(embedder, train_loader)  # Normalize using entire dataset
 
-for batch in train_loader:
-    signal = batch[0].to(device)  # shape: (B, L, C)
-    spectrograms = embedder.ts_to_img(signal)
-    print("Spectrogram shape:", spectrograms.shape)
+data = next(iter(train_loader))    
+signal = data[0].to(device)  # shape: (B, L, C)
+spectrograms = embedder.ts_to_img(signal)
+print("Spectrogram shape:", spectrograms.shape)
