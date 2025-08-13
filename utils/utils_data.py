@@ -124,6 +124,32 @@ def get_mfp_dataloader(
     dataloader = DataLoader(TensorDataset(chunks), batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
     return dataloader
 
+def get_full_mfp_dataloader(
+        data_path, 
+        sensor="T1", 
+        split="train", 
+        batch_size=32, 
+        split_ratios=(0.6, 0.2), # (train_ratio, valid_ratio)
+        shuffle=False, 
+        num_workers=0,
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ):
+
+    T1, T2, T3 = load_mat_data(data_path, ["T1", "T2", "T3"])
+    data_dict = {"T1": T1, "T2": T2, "T3": T3}
+    train_data, valid_data, test_data = split_data(data_dict[sensor], *split_ratios)
+
+    if split == "train":
+        data = train_data
+    elif split == "valid":
+        data = valid_data
+    elif split == "test":
+        data = test_data
+
+    data_tensor = torch.tensor(data, dtype=torch.float32).unsqueeze(0)
+    data_tensor = data_tensor.to(device)
+    dataloader = DataLoader(TensorDataset(data_tensor), batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    return dataloader
 
 def apply_bias(signal: torch.Tensor, magnitude: float) -> torch.Tensor:
     return signal + magnitude
