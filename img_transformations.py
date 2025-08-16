@@ -6,8 +6,6 @@ import pywt
 import numpy as np
 import torchaudio.transforms as T
 from utils.utils_data import MinMaxScaler, MinMaxArgs
-from ssqueezepy import cwt, icwt
-from ssqueezepy import Wavelet
 
 
 class TsImgEmbedder(ABC):
@@ -201,306 +199,75 @@ class STFTEmbedder(TsImgEmbedder):
 
 
 class WAVEmbedder(TsImgEmbedder):
-    def __init__(self, device, seq_len, nv=8, scales='log-piecewise'):
+    def __init__(self, device, seq_len, wavelet_name='morl', scales_arange=(1, 64)):
         super().__init__(device,seq_len)
-        
-        self.wavelet = Wavelet(('gmw', {'gamma': 3, 'beta': 60, 'norm': 'energy'}))
-        self.nv = nv
-        self.scales = scales
+        self.wavelet_name = wavelet_name
+        self.scales = np.arange(scales_arange[0], scales_arange[1])
         self.min_real, self.max_real = None, None
         self.min_imag, self.max_imag = None, None
-        self.min_trd, self.max_trd = None, None
-
-        # self.org_img_width = seq_len
-
-        # self.device = device
 
     def cache_min_max_params(self, train_data):
+        real, imag = self.wav_transform(train_data)
+        num_features = real.shape[1]
 
-        real, imag, trd = self.wav_transform(train_data)
-        # compute and cache min and max values
-        real, min_real, max_real = MinMaxScaler(real, True)
-        imag, min_imag, max_imag = MinMaxScaler(imag, True)
-        trd, min_trd, max_trd = MinMaxScaler(trd, True)
+        min_reals, max_reals = [], []
+        min_imags, max_imags = [], []
 
-        self.min_real, self.max_real = torch.Tensor(min_real), torch.Tensor(max_real)
-        self.min_imag, self.max_imag = torch.Tensor(min_imag), torch.Tensor(max_imag)
-        self.min_trd, self.max_trd = torch.Tensor(min_trd), torch.Tensor(max_trd)
+        for k in range(num_features):
+            real_k = real[:, k, :, :]
+            min_reals.append(np.min(real_k))
+            max_reals.append(np.max(real_k))
 
-    def wav_transform(self, data):
-        """
-        Args:
-            data: time series data. Shape: (B,L,K)
-        Returns:
-            real and imaginary part of the continuous wavelet transform 
-        """
+            imag_k = imag[:, k, :, :]
+            min_imags.append(np.min(imag_k))
+            max_imags.append(np.max(imag_k))
 
-        signal = data
-        t = np.arange(signal.shape[1])
-
-        # print("signal shape", signal[1].shape)
-
-        self.trends = np.empty_like(signal)
-        # self.trend_2D = np.meshgrid
-        self.detrended_signals = np.empty_like(signal)
-        self.trend_2D = np.empty((signal.shape[0], signal.shape[1], signal.shape[1]))
-
-        for i in range(signal.shape[0]):
-            trend = np.poly1d(np.polyfit(t, signal[i].squeeze(-1), deg=7))(t)
-            trend = trend[:,np.newaxis]
-            # print(trend.shape)
-            self.trends[i] = trend
-            self.detrended_signals[i] = signal[i] - trend
-
-            T, Z = np.meshgrid(t,t)
-            trend_2D = np.poly1d(np.polyfit(t, signal[i].squeeze(-1), deg=7))(T)
-            self.trend_2D[i] = trend_2D
-
-        self.detrended_signals = self.detrended_signals.squeeze(-1)
-        # print("testhh",self.detrended_signals.shape)
-
-        Wx_detrended, self.scales_s = cwt(self.detrended_signals, wavelet=self.wavelet, scales = self.scales,nv=self.nv,l1_norm=False)
-
-        Wx_detrended = Wx_detrended[:,np.newaxis,:,:] #add newaxis on dim1 (21, 1, 227, 728)
-        self.trend_2D = self.trend_2D[:,np.newaxis,:,:]
-        # print("trend",self.trends.shape)
-        # print("trend_2D",self.trend_2D.shape)
-
-        return Wx_detrended.real, Wx_detrended.imag, self.trend_2D
-
-    def ts_to_img(self, signal):
-        assert self.min_real is not None, "use init_norm_args() to compute scaling arguments"
-
-        real, imag, trd = self.wav_transform(signal)
-        real, imag, trd = torch.Tensor(real).to(self.device), torch.Tensor(imag).to(self.device), torch.Tensor(trd).to(self.device)
-        
-        # MinMax scaling
-        real = (MinMaxArgs(real, self.min_real.to(self.device), self.max_real.to(self.device)) - 0.5) * 2
-        imag = (MinMaxArgs(imag, self.min_imag.to(self.device), self.max_imag.to(self.device)) - 0.5) * 2
-        trd = (MinMaxArgs(trd, self.min_trd.to(self.device), self.max_trd.to(self.device)) - 0.5) * 2
-
-        #padding on image
-        real = self.pad_to_square_wav(real)
-        imag = self.pad_to_square_wav(imag)
-
-        wavelet_out = torch.cat((real, imag, trd), dim=1)
-        # print("wavelet_out",wavelet_out.shape)
-
-        return wavelet_out
-
-    def img_to_ts(self, x_image):
-        
-        min_real, max_real = self.min_real.to(self.device), self.max_real.to(self.device)
-        min_imag, max_imag = self.min_imag.to(self.device), self.max_imag.to(self.device)
-        min_trd, max_trd = self.min_trd.to(self.device), self.max_trd.to(self.device)
-
-        split = torch.split(x_image, x_image.shape[1] // 3, dim=1)
-        real, imag, trd = split[0], split[1], split[2]
-        
-        #unpad of image
-        real = self.unpad_wav(real)
-        imag = self.unpad_wav(imag)
-
-        unnormalized_real = ((real / 2) + 0.5) * (max_real - min_real) + min_real
-        unnormalized_imag = ((imag / 2) + 0.5) * (max_imag - min_imag) + min_imag
-        unnormalized_trd  = ((trd / 2)  + 0.5) * (max_trd  - min_trd) + min_trd
-
-        unnormalized_wav = torch.complex(unnormalized_real, unnormalized_imag)
-
-        unnormalized_wav = unnormalized_wav.cpu().numpy()
-        unnormalized_trd = unnormalized_trd.cpu().numpy()
-
-        # print("wave",unnormalized_wav.shape)
-        # print("tred",unnormalized_trd.shape)
-
-        Wx_detrended = np.squeeze(unnormalized_wav,axis=1) #remove the added axis
-        trd_img = np.squeeze(unnormalized_trd,axis=1) #remove the added axis
-
-        reconstructed_detrended = icwt(Wx_detrended, wavelet=self.wavelet, scales = self.scales_s,nv=self.nv,l1_norm=False)
-
-        self.reconstructed_trend = np.empty((trd_img.shape[0],trd_img.shape[1]))
-
-        for i in range(trd_img.shape[0]):
-            t = np.arange(trd_img.shape[1])
-            trend_values = trd_img[i][0, :]  # Extract the corresponding 1D trend values
-            reconstructed_polynomial = np.poly1d(np.polyfit(t, trend_values, deg=7))
-            self.reconstructed_trend[i] = reconstructed_polynomial(t)
-
-        # print("final_reconstructed_detrend",reconstructed_detrended.shape)
-        # print("final_reconstructed_trend",self.reconstructed_trend.shape)
-
-        reconstructed_with_trend = reconstructed_detrended + self.reconstructed_trend
-
-        return torch.Tensor(reconstructed_with_trend).to(self.device)
-
-    def pad_to_square_wav(self, x_image):
-        _, _, height, width = x_image.shape
-        height_padding = width - height 
-        
-        if height_padding > 0:
-            # print("pad")
-            last_row = x_image[:, :, -1:, :] 
-            row_padding_tensor = last_row.repeat(1, 1, height_padding, 1)  
-            x_padded_image = torch.cat((x_image, row_padding_tensor), dim=2)  
-
-        else: 
-            # print("nopad")
-            return x_image
-
-        return x_padded_image
-
-    def unpad_wav(self, x_image):
-
-        org_img_width = self.scales_s.shape[0] #orginal number of scale
-
-        _, _, img_height, img_width = x_image.shape
-
-        if img_width != org_img_width:
-
-            return x_image[: , : , :org_img_width, :]
-
-        return x_image
-
-
-class WAVEmbedder_ST(TsImgEmbedder):
-    def __init__(self, device, seq_len, nv=7, scales='log-piecewise'):
-        super().__init__(device,seq_len)
-        self.wavelet = Wavelet(('gmw', {'gamma': 3, 'beta': 60, 'norm': 'energy'}))
-        self.nv = nv
-        self.scales = scales
-        self.min_real, self.max_real = None, None
-        self.min_imag, self.max_imag = None, None
-        self.min_trd, self.max_trd = None, None
-
-    def cache_min_max_params(self, train_data):
-        real, imag, trd = self.wav_transform(train_data)
-        real, min_real, max_real = MinMaxScaler(real, True)
-        imag, min_imag, max_imag = MinMaxScaler(imag, True)
-        trd, min_trd, max_trd = MinMaxScaler(trd, True)
-
-        self.min_real, self.max_real = torch.Tensor(min_real), torch.Tensor(max_real)
-        self.min_imag, self.max_imag = torch.Tensor(min_imag), torch.Tensor(max_imag)
-        self.min_trd, self.max_trd = torch.Tensor(min_trd), torch.Tensor(max_trd)
+        self.min_real = torch.tensor(min_reals)
+        self.max_real = torch.tensor(max_reals)
+        self.min_imag = torch.tensor(min_imags)
+        self.max_imag = torch.tensor(max_imags)
 
     def wav_transform(self, data):
-        signal = data
-        t = np.arange(signal.shape[1])
+        # data is a numpy array of shape (B, L, K)
+        num_batches, seq_len, num_features = data.shape
+        
+        all_reals = []
+        all_imags = []
 
-        self.trends = np.empty_like(signal)
-        self.detrended_signals = np.empty_like(signal)
-        self.trends_2D = np.empty((signal.shape[0], signal.shape[2], signal.shape[1], signal.shape[1]))
+        for k in range(num_features):
+            feature_data = data[:, :, k] # Shape (B, L)
+            coeffs, _ = pywt.cwt(feature_data, self.scales, self.wavelet_name, axis=1)
+            # coeffs shape is (B, num_scales, L)
+            all_reals.append(coeffs.real)
+            all_imags.append(coeffs.imag)
 
-        for batch_idx in range(signal.shape[0]):
-            for feature_idx in range(signal.shape[2]):
-                time_series_signal = signal[batch_idx,:,feature_idx]
-                trend = np.poly1d(np.polyfit(t, time_series_signal, deg=7))(t)
-                self.trends[batch_idx, :, feature_idx] = trend
-                detrended_signal = time_series_signal - trend
-                self.detrended_signals[batch_idx,:,feature_idx] = detrended_signal
+        # all_reals is a list of K arrays of shape (B, S, L)
+        # stack them on feature dimension
+        real_coeffs = np.stack(all_reals, axis=1) # (B, K, S, L)
+        imag_coeffs = np.stack(all_imags, axis=1) # (B, K, S, L)
 
-                T, Z = np.meshgrid(t,t)
-                trend_2D = np.poly1d(np.polyfit(t, time_series_signal, deg=7))(T)
-                self.trends_2D[batch_idx,feature_idx,:,:] = trend_2D
-
-        wavelogram_real = []
-        wavelogram_imag = []
-
-        for feature_wav_idx in range(signal.shape[2]):
-            ts_to_wav_signal = self.detrended_signals[:,:,feature_wav_idx]
-            Wx_detrended, self.scales_s = cwt(ts_to_wav_signal, wavelet=self.wavelet, scales = self.scales,nv=self.nv,l1_norm=False)
-            wavelogram_real.append(Wx_detrended.real)
-            wavelogram_imag.append(Wx_detrended.imag)
-
-        wavelogram_real = np.array(wavelogram_real)
-        wavelogram_imag = np.array(wavelogram_imag)
-        wavelogram_real = np.transpose(wavelogram_real, (1, 0, 2, 3))
-        wavelogram_imag = np.transpose(wavelogram_imag, (1, 0, 2, 3))
-
-        return wavelogram_real, wavelogram_imag, self.trends_2D
+        return real_coeffs, imag_coeffs
 
     def ts_to_img(self, signal):
-        assert self.min_real is not None, "use init_norm_args() to compute scaling arguments"
+        # signal is a torch tensor (B, L, K)
+        assert self.min_real is not None, "use cache_min_max_params() to compute scaling arguments"
 
-        # Signal is expected to be (B, L, K) for wav_transform
-        # Here, B will be 1 as we are passing the whole signal at once.
-        real, imag, trd = self.wav_transform(signal.cpu().numpy())
-        real, imag, trd = torch.Tensor(real).to(self.device), torch.Tensor(imag).to(self.device), torch.Tensor(trd).to(self.device)
+        real, imag = self.wav_transform(signal.cpu().numpy())
+        real, imag = torch.Tensor(real).to(self.device), torch.Tensor(imag).to(self.device)
 
-        # MinMax scaling
-        real = (MinMaxArgs(real, self.min_real.to(self.device), self.max_real.to(self.device)) - 0.5) * 2
-        imag = (MinMaxArgs(imag, self.min_imag.to(self.device), self.max_imag.to(self.device)) - 0.5) * 2
-        trd = (MinMaxArgs(trd, self.min_trd.to(self.device), self.max_trd.to(self.device)) - 0.5) * 2
+        # self.min/max_real/imag are of shape (K,)
+        # Reshape for broadcasting: (1, K, 1, 1)
+        min_real = self.min_real.view(1, -1, 1, 1).to(self.device)
+        max_real = self.max_real.view(1, -1, 1, 1).to(self.device)
+        min_imag = self.min_imag.view(1, -1, 1, 1).to(self.device)
+        max_imag = self.max_imag.view(1, -1, 1, 1).to(self.device)
 
-        real = self.pad_to_square_wav(real)
-        imag = self.pad_to_square_wav(imag)
+        # MinMax scaling per feature
+        real = (MinMaxArgs(real, min_real, max_real) - 0.5) * 2
+        imag = (MinMaxArgs(imag, min_imag, max_imag) - 0.5) * 2
 
-        wavelet_out = torch.cat((real, imag, trd), dim=1)
+        wavelet_out = torch.cat((real, imag), dim=1)
         return wavelet_out
 
-    def img_to_ts(self, x_image):
-        min_real, max_real = self.min_real.to(self.device), self.max_real.to(self.device)
-        min_imag, max_imag = self.min_imag.to(self.device), self.max_imag.to(self.device)
-        min_trd, max_trd = self.min_trd.to(self.device), self.max_trd.to(self.device)
-
-        split = torch.split(x_image, x_image.shape[1] // 3, dim=1)
-        real, imag, trd = split[0], split[1], split[2]
-
-        real = self.unpad_wav(real)
-        imag = self.unpad_wav(imag)
-
-        unnormalized_real = ((real / 2) + 0.5) * (max_real - min_real) + min_real
-        unnormalized_imag = ((imag / 2) + 0.5) * (max_imag - min_imag) + min_imag
-        unnormalized_trd  = ((trd / 2)  + 0.5) * (max_trd  - min_trd) + min_trd
-
-        unnormalized_wav = torch.complex(unnormalized_real, unnormalized_imag)
-
-        unnormalized_wav = unnormalized_wav.cpu().numpy()
-        unnormalized_trd = unnormalized_trd.cpu().numpy()
-
-        self.reconstructed_detrended = np.empty((unnormalized_wav.shape[0],unnormalized_wav.shape[3],unnormalized_wav.shape[1]))
-
-        for ft_iwav_idx in range(unnormalized_wav.shape[1]):
-            iwx_detrended = unnormalized_wav[:,ft_iwav_idx,:,:]
-            reconstructed_detrendeds = icwt(iwx_detrended, wavelet=self.wavelet, scales = self.scales,nv=self.nv,l1_norm=False)
-            self.reconstructed_detrended[:,:,ft_iwav_idx] = reconstructed_detrendeds
-
-        self.reconstructed_trend = np.empty((unnormalized_trd.shape[0],unnormalized_trd.shape[3],unnormalized_trd.shape[1]))
-
-        for bt_trd_idx in range(unnormalized_trd.shape[0]):
-            for ft_trx_idx in range(unnormalized_trd.shape[1]):
-                t = np.arange(unnormalized_trd.shape[3])
-                trend_values = unnormalized_trd[bt_trd_idx][ft_trx_idx][0, :]
-                reconstructed_polynomial = np.poly1d(np.polyfit(t, trend_values, deg=7))
-                self.reconstructed_trend[bt_trd_idx,:,ft_trx_idx] = reconstructed_polynomial(t)
-
-        reconstructed_with_trend = self.reconstructed_detrended + self.reconstructed_trend
-
-        return torch.Tensor(reconstructed_with_trend).to(self.device)
-
-    def pad_to_square_wav(self, x_image):
-        _, _, height, width = x_image.shape
-        height_padding = width - height
-
-        if height_padding > 0:
-            last_row = x_image[:, :, -1:, :]
-            row_padding_tensor = last_row.repeat(1, 1, height_padding, 1)
-            x_padded_image = torch.cat((x_image, row_padding_tensor), dim=2)
-        else:
-            return x_image
-
-        return x_padded_image
-
-    def unpad_wav(self, x_image):
-        # org_img_width = self.scales_s.shape[0] # The original number of scales is needed here
-        # self.scales_s is set in wav_transform. When unpadding, we need this value.
-        # This becomes tricky if wav_transform hasn't been called yet for the full signal,
-        # or if it was called for a different length signal.
-        # A more robust way might be to pass the original_scales_s or calculate it.
-        # For simplicity here, let's assume it's set after the full signal transform.
-        org_img_width = self.scales_s.shape[0] # Assuming self.scales_s is set from full transform
-
-        _, _, img_height, img_width = x_image.shape
-
-        if img_width != org_img_width:
-            return x_image[: , : , :org_img_width, :]
-        return x_image
+    def img_to_ts(self, img: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError("Reconstruction from image to time series is not supported.")
