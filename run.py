@@ -1,145 +1,115 @@
 import torch
 import matplotlib.pyplot as plt
+import numpy as np
 from pathlib import Path
 from torch.utils.data import TensorDataset, DataLoader
-from utils.utils_data import get_mfp_dataloader, get_full_mfp_dataloader
-from model import init_stft_embedder, init_wav_embedder, get_full_signal_from_dataloader, split_image_into_chunks
-from img_transformations import STFTEmbedder, WAVEmbedder_ST, WAVEmbedder
 
+from utils.utils_data import get_full_mfp_dataloader
+from model import init_wav_embedder, split_image_into_chunks
+from img_transformations import WAVEmbedder
 
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# data_path = Path("Datasets")/"CVACaseStudy"/"MFP"/"Training.mat"
-# chunk_size = 1024
-# batch_size = 32
+# --- Configuration ---
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+data_path = Path("Datasets") / "CVACaseStudy" / "MFP" / "Training.mat"
 
-# train_loader = get_mfp_dataloader(
-#     data_path=data_path,
-#     sensor="T1",
-#     split="train",
-#     chunk_size=chunk_size,
-#     batch_size=batch_size,
-#     split_ratios=(0.6, 0.2),
-#     shuffle=False)
+# Select a single feature to process and visualize
+# You can change this index to inspect other features.
+FEATURE_INDEX = 13
 
-# embedder = STFTEmbedder(device=device, seq_len=chunk_size, n_fft=63, hop_length=32)
-# init_stft_embedder(embedder, train_loader)  # Normalize using entire dataset
+# The desired width of your wavelet image chunks for the DL model
+CHUNK_WIDTH = 32
 
-# data = next(iter(train_loader))    
-# signal = data[0].to(device)  # shape: (B, L, C)
-# spectrograms = embedder.ts_to_img(signal)
-# print("Spectrogram shape:", spectrograms.shape)
-
-# the number of split = T / t (wavelet )
-# Whole -> cut
-# 
-
-
-# Device configuration
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("mps" if torch.cuda.is_available() else "cpu")
-
-# Define data path and parameters
-data_path = Path("Datasets")/"CVACaseStudy"/"MFP"/"Training.mat"
-final_image_chunk_width = 32 # The desired width of your wavelet image chunks
-
-# Load the full training data first to get global min/max for normalization
-# We use a large chunk_size to effectively load the whole signal as one "chunk"
-# for initial processing.
+# --- 1. Load The Full Training Signal ---
+print("Loading full training signal...")
 full_train_dataloader = get_full_mfp_dataloader(
     data_path=data_path,
     sensor="T1",
     split="train",
-    batch_size=1, # Get one batch that ideally contains the full signal
-    split_ratios=(0.6, 0.2), # (train_ratio, valid_ratio)
+    batch_size=1,  # Get one batch that contains the full signal
+    split_ratios=(0.6, 0.2),
     shuffle=False,
     device=device
 )
 
-full_train_signal_tensor = get_full_signal_from_dataloader(full_train_dataloader)
-print(f"Full training signal loaded with shape: {full_train_signal_tensor.shape}")
+full_train_signal = next(iter(full_train_dataloader))[0]
+print(f"Full training signal loaded with shape: {full_train_signal.shape}")
 
-# Initialize the WAVEmbedder_ST with an arbitrary seq_len; it will be updated by ts_to_img
-# We set seq_len to the actual length of the full signal for embedding.
-full_signal_length = full_train_signal_tensor.shape[1] 
-embedder_wav = WAVEmbedder_ST(device=device, seq_len=full_signal_length, nv=7, scales='log-piecewise')
+# --- 2. Initialize and Prepare the Wavelet Embedder ---
+# Select the single feature we want to process
+signal_feature = full_train_signal[:, :, FEATURE_INDEX:FEATURE_INDEX+1]
+print(f"Selected feature slice with shape: {signal_feature.shape}")
 
+full_signal_length = signal_feature.shape[1]
 
-# embedder_wav = WAVEmbedder(device=device, seq_len=full_signal_length, nv=7, scales='log-piecewise')
-# single_feature = full_train_signal_tensor[:, :, 1]
-# single_feature = full_train_signal_tensor[:, :, 1:2]  # shape: [1, 6223, 1]
+embedder = WAVEmbedder(
+    device=device, 
+    seq_len=full_signal_length, 
+    wavelet_name='morl', 
+    scales_arange=(1, 128)
+)
 
-# Cache min/max parameters using the entire training signal (as numpy for ssqueezepy)
-print("Caching min/max parameters for WAVEmbedder_ST using the full training signal...")
-signal_features = full_train_signal_tensor[:, :, 10:12]  # shape: [1, 6223, 1]
-# init_wav_embedder(embedder_wav, full_train_signal_tensor.cpu().numpy())
-init_wav_embedder(embedder_wav, signal_features.cpu().numpy())
-print("Min/max parameters cached.")
+print("Caching min/max normalization parameters for magnitude and phase...")
+init_wav_embedder(embedder, signal_feature.cpu().numpy())
+print("Normalization parameters cached.")
 
-# --- Process the entire signal ---
-# Now, load the specific signal you want to transform (e.g., from validation or test set)
-# Let's use the validation set for demonstration.
-# full_valid_dataloader = get_full_mfp_dataloader(
-#     data_path=data_path,
-#     sensor="T1",
-#     split="valid",
-#     batch_size=1, # Get one batch that ideally contains the full signal
-#     split_ratios=(0.6, 0.2), # (train_ratio, valid_ratio)
-#     shuffle=False,
-#     device=device
-# )
-# full_signal_to_transform = get_full_signal_from_dataloader(full_valid_dataloader)
-# print(f"Signal to transform (validation) shape: {full_signal_to_transform.shape}")
+# --- 3. Transform Signal to 2-Channel CWT Image (Magnitude & Phase) ---
+print("Transforming signal to wavelet image...")
+wavelet_image = embedder.ts_to_img(signal_feature)
+print(f"Full wavelet image shape: {wavelet_image.shape}")
 
-# # Important: Update embedder's seq_len for the signal about to be transformed
-# embedder_wav.seq_len = full_signal_to_transform.shape[1]
+# --- 4. Extract Scalogram for Plotting ---
+# The first channel (index 0) is the normalized magnitude (scalogram)
+scalogram = wavelet_image[:, 0, :, :].squeeze()
 
-# Transform the ENTIRE signal into its wavelet image representation
-# print("Transforming the entire signal into wavelet image...")
-# full_wavelet_image = embedder_wav.ts_to_img(full_signal_to_transform)
-# print(f"Full wavelet image shape: {full_wavelet_image.shape}")
+# --- 5. Plotting for Verification ---
+print("Generating plots...")
+# fig, axs = plt.subplots(2, 1, figsize=(15, 10), gridspec_kw={'height_ratios': [1, 3]})
 
+# # Plot 1: Original Time Series Signal
+# axs[0].plot(signal_feature.squeeze().cpu().numpy(), label=f'Feature {FEATURE_INDEX}')
+# axs[0].set_title(f"Original Signal for Feature {FEATURE_INDEX}")
+# axs[0].set_xlabel("Time Steps")
+# axs[0].set_ylabel("Amplitude")
+# axs[0].legend()
+# axs[0].grid(True)
 
-full_wavelet_image = embedder_wav.ts_to_img(signal_features)
-print(f"Full wavelet image shape: {full_wavelet_image.shape}")
+# # Plot 2: Normalized Scalogram (Magnitude Channel)
+# im = axs[1].imshow(scalogram.cpu().numpy(), aspect='auto', origin='lower', cmap='viridis')
+# axs[1].set_title(f"Normalized Wavelet Scalogram for Feature {FEATURE_INDEX}")
+# axs[1].set_xlabel("Time Steps")
+# axs[1].set_ylabel("Scales")
+# fig.colorbar(im, ax=axs[1], label='Normalized Magnitude')
 
-# --- Separate the full wavelet image into chunks ---
-print(f"Chunking the full wavelet image into chunks of width {final_image_chunk_width}...")
-wavelet_image_chunks = split_image_into_chunks(full_wavelet_image, final_image_chunk_width)
+# plt.tight_layout()
+# plt.show()
+
+# --- 6. Chunking the Image and Plotting for a DL Model ---
+print(f"Chunking the full wavelet image into chunks of width {CHUNK_WIDTH}...")
+wavelet_image_chunks = split_image_into_chunks(wavelet_image, CHUNK_WIDTH)
 print(f"Shape of wavelet image chunks: {wavelet_image_chunks.shape}")
 
-# Now you have `wavelet_image_chunks` which can be used in a DataLoader
-# Example: Create a DataLoader for the wavelet image chunks
-wavelet_image_dataset = TensorDataset(wavelet_image_chunks)
-wavelet_image_dataloader = DataLoader(wavelet_image_dataset, batch_size=32, shuffle=True)
-
-print(f"Number of batches in chunked wavelet image dataloader: {len(wavelet_image_dataloader)}")
-first_batch_of_chunks = next(iter(wavelet_image_dataloader))
-print(f"Shape of first batch of wavelet image chunks: {first_batch_of_chunks[0].shape}")
-
-
 if wavelet_image_chunks.shape[0] > 0:
-    # Take the first chunk for visualization
-    sample_wavelet_chunk = wavelet_image_chunks[0].unsqueeze(0) # Add batch dimension back for img_to_ts
-    print(f"Sample chunk shape for reconstruction: {sample_wavelet_chunk.shape}")
+    # --- 7. Plotting Scalogram for Each Chunk ---
+    num_chunks_to_plot = min(5, wavelet_image_chunks.shape[0])
+    print(f"Generating scalogram plots for the first {num_chunks_to_plot} chunks...")
 
-    # Pick the first sample in the batch (batch dim = 0)
-    wavelet_img = full_wavelet_image[0]  # shape: (C, scales, time)
+    for i in range(num_chunks_to_plot):
+        # A chunk has shape: (C, H, W_chunk).
+        # For a single feature, C=2 [magnitude, phase]. We plot the magnitude (index 0).
+        chunk_magnitude = wavelet_image_chunks[i, 0, :, :]
+        
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        im = ax.imshow(chunk_magnitude.cpu().numpy(), aspect='auto', origin='lower', cmap='viridis')
+        ax.set_title(f"Scalogram for Chunk {i + 1}")
+        ax.set_xlabel("Time Steps (in chunk)")
+        ax.set_ylabel("Scales")
+        fig.colorbar(im, ax=ax, label='Normalized Magnitude')
+        plt.tight_layout()
+        plt.show()
 
-    # Pick the real part of feature 0 → channel index 0
-    real_part = wavelet_img[2].cpu().numpy()
+    wavelet_image_dataset = TensorDataset(wavelet_image_chunks)
+    wavelet_image_dataloader = DataLoader(wavelet_image_dataset, batch_size=32, shuffle=True)
+    print(f"\nSuccessfully created a DataLoader with {len(wavelet_image_dataloader)} batches of chunks.")
 
-    plt.figure(figsize=(10, 6))
-    plt.imshow(real_part, aspect='auto', origin='lower', cmap='viridis', vmin=-1, vmax=1)
-    plt.colorbar(label='Amplitude')
-    plt.xlabel('Time')
-    plt.ylabel('Scale')
-    plt.title('Wavelet Transform - Real Part (Feature 0)')
-    plt.show()
-
-    # Before calling init_wav_embedder
-    # plt.figure(figsize=(10, 4))
-    # plt.plot(signal_features.squeeze().cpu().numpy())
-    # plt.title("Raw Signal for Feature 1")
-    # plt.xlabel("Time Steps")
-    # plt.ylabel("Amplitude")
-    # plt.show()
+else:
+    print("No wavelet chunks were created. The signal is shorter than the chunk width.")
