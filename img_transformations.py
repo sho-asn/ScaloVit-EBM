@@ -9,7 +9,7 @@ from utils.utils_data import MinMaxArgs
 
 class TsImgEmbedder(ABC):
     """
-    Abstract class for transforming time series to images and vice versa
+    Abstract class for transforming time series to images.
     """
 
     def __init__(self, device: torch.device, seq_len: int):
@@ -19,105 +19,104 @@ class TsImgEmbedder(ABC):
     @abstractmethod
     def ts_to_img(self, signal: torch.Tensor) -> torch.Tensor:
         """
-
         Args:
             signal: given time series
-
         Returns:
             image representation of the signal
-
         """
         pass
 
-    @abstractmethod
     def img_to_ts(self, img: torch.Tensor) -> torch.Tensor:
         """
-
         Args:
             img: given generated image
-
         Returns:
             time series representation of the generated image
         """
-        pass
+        raise NotImplementedError("Reconstruction is not supported by this embedder.")
 
 
 class WAVEmbedder(TsImgEmbedder):
+    """
+    Transforms a time series into a 2-channel image using Continuous Wavelet Transform.
+    The two channels represent the normalized magnitude (scalogram) and phase of the CWT.
+    """
     def __init__(self, 
                  device: torch.device, 
                  seq_len: int, 
                  wavelet_name: str = 'morl', 
-                 scales_arange: Tuple[int, int] = (1, 64)):
+                 scales_arange: Tuple[int, int] = (1, 128)):
         super().__init__(device, seq_len)
         self.wavelet_name: str = wavelet_name
         self.scales: np.ndarray = np.arange(scales_arange[0], scales_arange[1])
-        self.min_real: Optional[torch.Tensor] = None
-        self.max_real: Optional[torch.Tensor] = None
-        self.min_imag: Optional[torch.Tensor] = None
-        self.max_imag: Optional[torch.Tensor] = None
+        self.min_mag: Optional[torch.Tensor] = None
+        self.max_mag: Optional[torch.Tensor] = None
+        self.min_phase: Optional[torch.Tensor] = None
+        self.max_phase: Optional[torch.Tensor] = None
 
     def cache_min_max_params(self, train_data: np.ndarray) -> None:
-        real, imag = self.wav_transform(train_data)
-        num_features = real.shape[1]
-
-        min_reals, max_reals = [], []
-        min_imags, max_imags = [], []
-
-        for k in range(num_features):
-            real_k = real[:, k, :, :]
-            min_reals.append(np.min(real_k))
-            max_reals.append(np.max(real_k))
-
-            imag_k = imag[:, k, :, :]
-            min_imags.append(np.min(imag_k))
-            max_imags.append(np.max(imag_k))
-
-        self.min_real = torch.tensor(min_reals)
-        self.max_real = torch.tensor(max_reals)
-        self.min_imag = torch.tensor(min_imags)
-        self.max_imag = torch.tensor(max_imags)
-
-    def wav_transform(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        # data is a numpy array of shape (B, L, K)
-        num_batches, seq_len, num_features = data.shape
+        """
+        Calculates and caches the min/max of CWT magnitude and phase for each feature.
+        """
+        real, imag = self._wav_transform_raw(train_data)
         
-        all_reals = []
-        all_imags = []
+        magnitude = np.sqrt(real**2 + imag**2)
+        phase = np.arctan2(imag, real)
+        
+        num_features = magnitude.shape[1]
 
-        for k in range(num_features):
-            feature_data = data[:, :, k] # Shape (B, L)
-            coeffs, _ = pywt.cwt(feature_data, self.scales, self.wavelet_name, axis=1)
-            # coeffs shape is (B, num_scales, L)
-            all_reals.append(coeffs.real)
-            all_imags.append(coeffs.imag)
+        self.min_mag = torch.tensor([np.min(magnitude[:, k, :, :]) for k in range(num_features)])
+        self.max_mag = torch.tensor([np.max(magnitude[:, k, :, :]) for k in range(num_features)])
+        self.min_phase = torch.tensor([np.min(phase[:, k, :, :]) for k in range(num_features)])
+        self.max_phase = torch.tensor([np.max(phase[:, k, :, :]) for k in range(num_features)])
 
-        # all_reals is a list of K arrays of shape (B, S, L)
-        # stack them on feature dimension
-        real_coeffs = np.stack(all_reals, axis=1) # (B, K, S, L)
-        imag_coeffs = np.stack(all_imags, axis=1) # (B, K, S, L)
+    def _wav_transform_raw(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """ Performs the CWT and returns the raw real and imaginary coefficients. """
+        num_batches, seq_len, num_features = data.shape
 
-        return real_coeffs, imag_coeffs
+        batch_coeffs = []
+        for b in range(num_batches):
+            feature_coeffs = []
+            for k in range(num_features):
+                signal = data[b, :, k]
+                coeffs, _ = pywt.cwt(signal, self.scales, self.wavelet_name)
+                feature_coeffs.append(coeffs)
+            stacked_features = np.stack(feature_coeffs, axis=0)
+            batch_coeffs.append(stacked_features)
+        
+        full_coeffs = np.stack(batch_coeffs, axis=0)
+
+        return full_coeffs.real, full_coeffs.imag
 
     def ts_to_img(self, signal: torch.Tensor) -> torch.Tensor:
-        # signal is a torch tensor (B, L, K)
-        assert self.min_real is not None, "use cache_min_max_params() to compute scaling arguments"
+        """
+        Transforms the signal into a 2-channel image of normalized magnitude and phase.
+        """
+        assert self.min_mag is not None, "Normalization parameters not cached. Call `cache_min_max_params` first."
 
-        real, imag = self.wav_transform(signal.cpu().numpy())
-        real, imag = torch.Tensor(real).to(self.device), torch.Tensor(imag).to(self.device)
+        # Get raw CWT coefficients
+        real, imag = self._wav_transform_raw(signal.cpu().numpy())
+        
+        # Calculate magnitude and phase
+        magnitude = torch.tensor(np.sqrt(real**2 + imag**2), device=self.device)
+        phase = torch.tensor(np.arctan2(imag, real), device=self.device)
 
-        # self.min/max_real/imag are of shape (K,)
-        # Reshape for broadcasting: (1, K, 1, 1)
-        min_real = self.min_real.view(1, -1, 1, 1).to(self.device)
-        max_real = self.max_real.view(1, -1, 1, 1).to(self.device)
-        min_imag = self.min_imag.view(1, -1, 1, 1).to(self.device)
-        max_imag = self.max_imag.view(1, -1, 1, 1).to(self.device)
+        # Reshape scalers for broadcasting: (1, K, 1, 1)
+        min_mag = self.min_mag.view(1, -1, 1, 1).to(self.device)
+        max_mag = self.max_mag.view(1, -1, 1, 1).to(self.device)
+        min_phase = self.min_phase.view(1, -1, 1, 1).to(self.device)
+        max_phase = self.max_phase.view(1, -1, 1, 1).to(self.device)
 
-        # MinMax scaling per feature
-        real = (MinMaxArgs(real, min_real, max_real) - 0.5) * 2
-        imag = (MinMaxArgs(imag, min_imag, max_imag) - 0.5) * 2
+        # Normalize magnitude and phase independently
+        norm_magnitude = (MinMaxArgs(magnitude, min_mag, max_mag) - 0.5) * 2
+        norm_phase = (MinMaxArgs(phase, min_phase, max_phase) - 0.5) * 2
 
-        wavelet_out = torch.cat((real, imag), dim=1)
-        return wavelet_out
-
-    def img_to_ts(self, img: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("Reconstruction from image to time series is not supported.")
+        # The output channels for each feature will be [mag, phase]
+        # We stack and reshape to achieve this interleaving.
+        # Start with shape (B, K, 2, S, L) then reshape to (B, 2*K, S, L)
+        num_batches, num_features, num_scales, num_len = norm_magnitude.shape
+        
+        output_image = torch.stack([norm_magnitude, norm_phase], dim=2)
+        output_image = output_image.view(num_batches, 2 * num_features, num_scales, num_len)
+        
+        return output_image
