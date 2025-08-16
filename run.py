@@ -56,7 +56,7 @@ full_train_dataloader = get_full_mfp_dataloader(
 )
 
 full_train_signal_tensor = get_full_signal_from_dataloader(full_train_dataloader)
-# print(f"Full training signal loaded with shape: {full_train_signal_tensor.shape}")
+print(f"Full training signal loaded with shape: {full_train_signal_tensor.shape}")
 
 # Initialize the WAVEmbedder_ST with an arbitrary seq_len; it will be updated by ts_to_img
 # We set seq_len to the actual length of the full signal for embedding.
@@ -64,12 +64,13 @@ full_signal_length = full_train_signal_tensor.shape[1]
 embedder_wav = WAVEmbedder_ST(device=device, seq_len=full_signal_length, nv=7, scales='log-piecewise')
 
 
+# embedder_wav = WAVEmbedder(device=device, seq_len=full_signal_length, nv=7, scales='log-piecewise')
 # single_feature = full_train_signal_tensor[:, :, 1]
 # single_feature = full_train_signal_tensor[:, :, 1:2]  # shape: [1, 6223, 1]
 
 # Cache min/max parameters using the entire training signal (as numpy for ssqueezepy)
 print("Caching min/max parameters for WAVEmbedder_ST using the full training signal...")
-signal_features = full_train_signal_tensor[:, :, 1:3]  # shape: [1, 6223, 1]
+signal_features = full_train_signal_tensor[:, :, 10:12]  # shape: [1, 6223, 1]
 # init_wav_embedder(embedder_wav, full_train_signal_tensor.cpu().numpy())
 init_wav_embedder(embedder_wav, signal_features.cpu().numpy())
 print("Min/max parameters cached.")
@@ -125,12 +126,20 @@ if wavelet_image_chunks.shape[0] > 0:
     wavelet_img = full_wavelet_image[0]  # shape: (C, scales, time)
 
     # Pick the real part of feature 0 → channel index 0
-    real_part = wavelet_img[0].cpu().numpy()
+    real_part = wavelet_img[2].cpu().numpy()
 
     plt.figure(figsize=(10, 6))
-    plt.imshow(real_part, aspect='auto', origin='lower', cmap='viridis')
+    plt.imshow(real_part, aspect='auto', origin='lower', cmap='viridis', vmin=-1, vmax=1)
     plt.colorbar(label='Amplitude')
     plt.xlabel('Time')
     plt.ylabel('Scale')
     plt.title('Wavelet Transform - Real Part (Feature 0)')
     plt.show()
+
+    # Before calling init_wav_embedder
+    # plt.figure(figsize=(10, 4))
+    # plt.plot(signal_features.squeeze().cpu().numpy())
+    # plt.title("Raw Signal for Feature 1")
+    # plt.xlabel("Time Steps")
+    # plt.ylabel("Amplitude")
+    # plt.show()
