@@ -15,7 +15,7 @@ def init_stft_embedder(embedder, train_loader):
     print(all_data.shape)
     embedder.cache_min_max_params(torch.cat(data, dim=0))
 
-def init_wav_embedder(embedder, full_train_signal_np):
+def init_wav_embedder(embedder, full_train_signal_np) -> None:
     """
     Initializes min/max values for normalization across the whole training signal.
     Args:
@@ -23,10 +23,6 @@ def init_wav_embedder(embedder, full_train_signal_np):
         full_train_signal_np (np.ndarray): The entire training time-series data as numpy array.
                                              Shape: (1, L, F) for single batch of full signal
     """
-    # Use a dummy signal_length for the embedder's internal seq_len during init,
-    # as we're interested in the entire signal's properties.
-    # The actual seq_len for the embedder will be updated when ts_to_img is called with the full signal.
-    # For caching, we just need the statistics from a representative dataset.
     embedder.cache_min_max_params(full_train_signal_np)
 
 def split_image_into_chunks(image: torch.Tensor, chunk_width: int) -> torch.Tensor:
@@ -68,5 +64,4 @@ def get_full_signal_from_dataloader(dataloader) -> torch.Tensor:
         all_chunks.append(batch_data[0])
     # Concatenate along the sequence length dimension (dim=1)
     full_signal = torch.cat(all_chunks, dim=1)
-    print(full_signal.shape)
     return full_signal
