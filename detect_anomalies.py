@@ -155,8 +155,8 @@ def detect(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--val_data_path", type=str, default="val_chunks.pt")
-    parser.add_argument("--train_data_path", type=str, default="train_chunks.pt") # Needed to refit embedder
+    parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks.pt")
+    parser.add_argument("--train_data_path", type=str, default="preprocessed_dataset/train_chunks.pt") # Needed to refit embedder
     parser.add_argument("--ckpt_path", type=str, required=True)
     parser.add_argument("--threshold_percentile", type=float, default=99.5)
     args = parser.parse_args()
