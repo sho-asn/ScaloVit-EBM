@@ -82,65 +82,66 @@ def get_args():
 def forward_all(model, flow_matcher, x_real_flow, x_real_cd, args):
     device = x_real_flow.device
 
-    # 1) Flow matching loss
-    x0_flow = torch.randn_like(x_real_flow)
-    t, xt, ut = flow_matcher.sample_location_and_conditional_flow(x0_flow, x_real_flow)
-    vt = model(t, xt)
-    flow_mse = (vt - ut).square().mean(dim=[1, 2, 3])
-    w_flow = flow_weight(t, cutoff=args.time_cutoff)
-    loss_flow = torch.mean(w_flow * flow_mse)
+    with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
+        # 1) Flow matching loss
+        x0_flow = torch.randn_like(x_real_flow)
+        t, xt, ut = flow_matcher.sample_location_and_conditional_flow(x0_flow, x_real_flow)
+        vt = model(t, xt)
+        flow_mse = (vt - ut).square().mean(dim=[1, 2, 3])
+        w_flow = flow_weight(t, cutoff=args.time_cutoff)
+        loss_flow = torch.mean(w_flow * flow_mse)
 
-    # 2) Contrastive Divergence loss
-    loss_cd = torch.tensor(0.0, device=device)
-    pos_energy = torch.tensor(0.0, device=device)
-    neg_energy = torch.tensor(0.0, device=device)
+        # 2) Contrastive Divergence loss
+        loss_cd = torch.tensor(0.0, device=device)
+        pos_energy = torch.tensor(0.0, device=device)
+        neg_energy = torch.tensor(0.0, device=device)
 
-    if args.lambda_cd > 0.0:
-        pos_energy = model.potential(x_real_cd, torch.ones_like(t))
+        if args.lambda_cd > 0.0:
+            pos_energy = model.potential(x_real_cd, torch.ones_like(t))
 
-        if args.split_negative:
-            B = x_real_cd.size(0)
-            half_b = B // 2
-            x_neg_init = torch.empty_like(x_real_cd)
-            x_neg_init[:half_b] = x_real_cd[:half_b]
-            x_neg_init[half_b:] = torch.randn_like(x_neg_init[half_b:])
-            at_data_mask = torch.zeros(B, dtype=torch.bool, device=device)
-            at_data_mask[:half_b] = True
-        else:
-            x_neg_init = torch.randn_like(x_real_cd)
-            at_data_mask = torch.zeros(x_real_cd.size(0), dtype=torch.bool, device=device)
+            if args.split_negative:
+                B = x_real_cd.size(0)
+                half_b = B // 2
+                x_neg_init = torch.empty_like(x_real_cd)
+                x_neg_init[:half_b] = x_real_cd[:half_b]
+                x_neg_init[half_b:] = torch.randn_like(x_neg_init[half_b:])
+                at_data_mask = torch.zeros(B, dtype=torch.bool, device=device)
+                at_data_mask[:half_b] = True
+            else:
+                x_neg_init = torch.randn_like(x_real_cd)
+                at_data_mask = torch.zeros(x_real_cd.size(0), dtype=torch.bool, device=device)
 
-        if args.same_temperature_scheduler:
-            at_data_mask.fill_(False)
+            if args.same_temperature_scheduler:
+                at_data_mask.fill_(False)
 
-        x_neg = gibbs_sampling_time_sweep(
-            x_init=x_neg_init,
-            model=model,
-            at_data_mask=at_data_mask,
-            n_steps=args.n_gibbs,
-            dt=args.dt_gibbs,
-            epsilon_max=args.epsilon_max,
-            time_cutoff=args.time_cutoff
-        )
-        neg_energy = model.potential(x_neg, torch.ones_like(t))
+            x_neg = gibbs_sampling_time_sweep(
+                x_init=x_neg_init,
+                model=model,
+                at_data_mask=at_data_mask,
+                n_steps=args.n_gibbs,
+                dt=args.dt_gibbs,
+                epsilon_max=args.epsilon_max,
+                time_cutoff=args.time_cutoff
+            )
+            neg_energy = model.potential(x_neg, torch.ones_like(t))
 
-        if args.cd_trim_fraction > 0.0:
-            B = neg_energy.size(0)
-            k = int(args.cd_trim_fraction * B)
-            if k > 0:
-                neg_sorted, _ = neg_energy.sort()
-                neg_trimmed = neg_sorted[:-k]
-                neg_stat = neg_trimmed.mean()
+            if args.cd_trim_fraction > 0.0:
+                B = neg_energy.size(0)
+                k = int(args.cd_trim_fraction * B)
+                if k > 0:
+                    neg_sorted, _ = neg_energy.sort()
+                    neg_trimmed = neg_sorted[:-k]
+                    neg_stat = neg_trimmed.mean()
+                else:
+                    neg_stat = neg_energy.mean()
             else:
                 neg_stat = neg_energy.mean()
-        else:
-            neg_stat = neg_energy.mean()
 
-        cd_val = pos_energy.mean() - neg_stat
-        loss_cd = args.lambda_cd * cd_val
+            cd_val = pos_energy.mean() - neg_stat
+            loss_cd = args.lambda_cd * cd_val
 
-        if args.cd_neg_clamp > 0:
-            loss_cd = torch.maximum(loss_cd, torch.tensor(-args.cd_neg_clamp, device=device))
+            if args.cd_neg_clamp > 0:
+                loss_cd = torch.maximum(loss_cd, torch.tensor(-args.cd_neg_clamp, device=device))
 
     total_loss = loss_flow + loss_cd
     return total_loss, loss_flow, loss_cd, pos_energy, neg_energy
@@ -227,7 +228,6 @@ def train(args):
 
         x_real_flow, _ = next(train_datalooper)
         x_real_cd, _ = next(train_datalooper)
-        print(f"Batch size from dataloader: {x_real_cd.shape[0]}")
         x_real_flow = x_real_flow.to(device)
         x_real_cd = x_real_cd.to(device)
 
@@ -242,7 +242,6 @@ def train(args):
         ema(model, ema_model, args.ema_decay)
 
         if step % args.log_step == 0:
-            print(f"Shape of pos_energy: {pos_energy.shape}")
             now = time.time()
             elapsed = now - last_log_time
             sps = args.log_step / elapsed if elapsed > 0 else 0
