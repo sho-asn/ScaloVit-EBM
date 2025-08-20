@@ -45,7 +45,7 @@ class WAVEmbedder(TsImgEmbedder):
                  device: torch.device, 
                  seq_len: int, 
                  wavelet_name: str = 'morl', 
-                 scales_arange: Tuple[int, int] = (1, 128)):
+                 scales_arange: Tuple[int, int] = (1, 129)):
         super().__init__(device, seq_len)
         self.wavelet_name: str = wavelet_name
         self.scales: np.ndarray = np.arange(scales_arange[0], scales_arange[1])
