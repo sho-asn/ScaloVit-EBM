@@ -11,7 +11,7 @@ from img_transformations import WAVEmbedder
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TRAINING_DATA_PATH = Path("Datasets") / "CVACaseStudy" / "MFP" / "Training.mat"
 
-CHUNK_WIDTH = 64
+CHUNK_WIDTH = 128
 TRAIN_SPLIT_RATIO = 0.8
 
 # --- 1. Load T1, T2, T3 as Separate Raw Signals ---
@@ -41,7 +41,7 @@ embedder = WAVEmbedder(
     device=device, 
     seq_len=combined_train_raw.shape[1], # Seq len based on combined training set
     wavelet_name='morl', 
-    scales_arange=(1, 128)
+    scales_arange=(1, 129)
 )
 
 # Cache min/max normalization parameters using ONLY the combined training signal
@@ -74,11 +74,11 @@ final_val_chunks = torch.cat(final_val_chunks, dim=0)
 
 train_save_path = Path("preprocessed_dataset/train_chunks.pt")
 torch.save(final_train_chunks, train_save_path)
-print(f"Saved {final_train_chunks.shape[0]} total training chunks to {train_save_path}")
+print(f"Saved {final_train_chunks.shape} total training dataset to {train_save_path}")
 
 val_save_path = Path("preprocessed_dataset/val_chunks.pt")
 torch.save(final_val_chunks, val_save_path)
-print(f"Saved {final_val_chunks.shape[0]} total validation chunks to {val_save_path}")
+print(f"Saved {final_val_chunks.shape} total validation dataset to {val_save_path}")
 
 # --- 6. Plot for Verification ---
 if final_train_chunks.shape[0] > 0:
