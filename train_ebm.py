@@ -38,7 +38,7 @@ def get_args():
     # Training Hyperparameters
     parser.add_argument("--lr", type=float, default=1.2e-3, help="Learning rate.")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size.")
-    parser.add_argument("--total_steps", type=int, default=20001, help="Total training steps.")
+    parser.add_argument("--total_steps", type=int, default=20000, help="Total training steps.")
     parser.add_argument("--warmup", type=int, default=1000, help="Learning rate warmup steps.")
     parser.add_argument("--ema_decay", type=float, default=0.9999, help="EMA decay rate.")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient norm clipping.")
@@ -268,6 +268,19 @@ def train(args):
             print(f"--- Checkpoint saved to {ckpt_path} ---")
 
     print("Training finished.")
+
+    # --- Save Final Model ---
+    print("Saving final model...")
+    final_ckpt_path = os.path.join(args.output_dir, f"{args.model_name}_final.pt")
+    torch.save({
+        'model': model.state_dict(),
+        'ema_model': ema_model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'scheduler': scheduler.state_dict(),
+        'step': args.total_steps - 1,
+        'args': args
+    }, final_ckpt_path)
+    print(f"--- Final checkpoint saved to {final_ckpt_path} ---")
 
 if __name__ == "__main__":
     args = get_args()
