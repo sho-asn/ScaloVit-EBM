@@ -7,7 +7,7 @@ import os
 import scipy.io as scio
 
 from sklearn.metrics import roc_auc_score
-from ebm_model import EBM
+from ebm_model_vit import EBViTModelWrapper as EBM
 from img_transformations import WAVEmbedder
 from model import init_wav_embedder, split_image_into_chunks
 
@@ -59,14 +59,28 @@ def detect(args):
     if not os.path.exists(args.ckpt_path):
         raise FileNotFoundError(f"Checkpoint file not found at {args.ckpt_path}")
         
-    ckpt = torch.load(args.ckpt_path, map_location=device)
+    ckpt = torch.load(args.ckpt_path, map_location=device, weights_only=False)
     train_args = ckpt['args']
     
     val_chunks = torch.load(args.val_data_path)
     _B, C, H, W = val_chunks.shape
-    val_chunks_reshaped = val_chunks.permute(0, 2, 3, 1).reshape(val_chunks.shape[0], H * W, C)
 
-    model = EBM(dim=H * W, channels=C, dim_mults=(1, 2, 4)).to(device)
+    model = EBM(
+        dim=(C, H, W),
+        num_channels=train_args.num_channels,
+        num_res_blocks=train_args.num_res_blocks,
+        channel_mult=train_args.channel_mult,
+        attention_resolutions=train_args.attention_resolutions,
+        num_heads=train_args.num_heads,
+        num_head_channels=train_args.num_head_channels,
+        dropout=train_args.dropout,
+        patch_size=train_args.patch_size,
+        embed_dim=train_args.embed_dim,
+        transformer_nheads=train_args.transformer_nheads,
+        transformer_nlayers=train_args.transformer_nlayers,
+        output_scale=train_args.output_scale,
+        energy_clamp=train_args.energy_clamp,
+    ).to(device)
     model.load_state_dict(ckpt['ema_model'])
     model.eval()
     print("Model loaded successfully.")
@@ -84,7 +98,7 @@ def detect(args):
     # --- 2. Establish Anomaly Threshold from Validation Data ---
     print(f"Calculating energy scores on validation data from {args.val_data_path}...")
     with torch.no_grad():
-        val_scores = model.potential(val_chunks_reshaped.to(device), t=torch.ones(val_chunks_reshaped.size(0), device=device))
+        val_scores = model.potential(val_chunks.to(device), t=torch.ones(val_chunks.size(0), device=device))
         val_scores = val_scores.cpu().numpy()
     
     anomaly_threshold = np.percentile(val_scores, args.threshold_percentile)
@@ -119,10 +133,8 @@ def detect(args):
             print("No chunks generated, skipping case.")
             continue
 
-        test_chunks_reshaped = test_chunks.permute(0, 2, 3, 1).reshape(test_chunks.shape[0], H * W, C)
-
         with torch.no_grad():
-            test_scores = model.potential(test_chunks_reshaped.to(device), t=torch.ones(test_chunks_reshaped.size(0), device=device))
+            test_scores = model.potential(test_chunks.to(device), t=torch.ones(test_chunks.size(0), device=device))
             test_scores = test_scores.cpu().numpy()
 
         ground_truth = get_ground_truth_labels(intervals, set_lengths, len(test_chunks), W)
