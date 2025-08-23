@@ -171,14 +171,6 @@ def train(args):
 
     print(f"Detected data shape: C={C}, H={H}, W={W}")
 
-    # Pad the image to be 128x128
-    if H == 127 or W == 127:
-        pad_h = 128 - H
-        pad_w = 128 - W
-        train_chunks = F.pad(train_chunks, (0, pad_w, 0, pad_h), "constant", 0)
-        _, C, H, W = train_chunks.shape
-        print(f"Padded data shape: C={C}, H={H}, W={W}")
-
     train_dataset = TensorDataset(train_chunks, torch.zeros(train_chunks.size(0)))
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=0, pin_memory=False)
     train_datalooper = infiniteloop(train_loader)
