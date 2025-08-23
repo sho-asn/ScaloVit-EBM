@@ -101,7 +101,7 @@ def detect(args):
             false_alarm_rate = incorrectly_flagged_non_faults / len(non_faulty_period_indices)
             print(f"False Alarm Rate: {false_alarm_rate:.4f}")
         else:
-            print("No non-faulty period in ground truth, cannot calculate False Alarm Rate.")
+            print("No non-faulty period in ground truth, cannot calculate FPR.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate an EBM model for anomaly detection on preprocessed data.")
