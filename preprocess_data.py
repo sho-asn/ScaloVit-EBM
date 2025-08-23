@@ -93,7 +93,7 @@ def preprocess():
         chunks = split_image_into_chunks(wavelet_image, CHUNK_WIDTH)
         final_val_chunks.append(chunks)
     final_val_chunks = torch.cat(final_val_chunks, dim=0)
-    torch.save(final_val_chunks, OUTPUT_DIR / "val_chunks.pt")
+    torch.save(final_val_chunks.float(), OUTPUT_DIR / "val_chunks.pt")
     print(f"Saved {final_val_chunks.shape} total validation chunks.")
 
     # --- 5. Process and Save Test Sets ---
@@ -128,7 +128,7 @@ def preprocess():
             ground_truth = get_set_ground_truth(intervals, len(test_chunks), CHUNK_WIDTH)
 
             save_path = OUTPUT_DIR / f"test_{case_file}_{set_name}.pt"
-            torch.save({'chunks': test_chunks.cpu(), 'labels': ground_truth}, save_path)
+            torch.save({'chunks': test_chunks.cpu().float(), 'labels': ground_truth}, save_path)
             print(f"Saved {test_chunks.shape[0]} chunks and labels to {save_path}")
 
         except (FileNotFoundError, KeyError) as e:
