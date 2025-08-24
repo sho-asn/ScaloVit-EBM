@@ -220,8 +220,8 @@ def train(args):
 
         x_real_flow, _ = next(train_datalooper)
         x_real_cd, _ = next(train_datalooper)
-        x_real_flow = x_real_flow.to(device)
-        x_real_cd = x_real_cd.to(device)
+        x_real_flow = x_real_flow.to(device).float()
+        x_real_cd = x_real_cd.to(device).float()
 
         total_loss, loss_flow, loss_cd, pos_energy, neg_energy = forward_all(
             model, flow_matcher, x_real_flow, x_real_cd, args
