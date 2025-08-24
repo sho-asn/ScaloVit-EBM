@@ -8,6 +8,7 @@ from glob import glob
 
 from sklearn.metrics import roc_auc_score
 from ebm_model_vit import EBViTModelWrapper as EBM
+from metrics import compute_all_metrics
 
 # --- Main Detection Logic ---
 def detect(args):
@@ -77,31 +78,18 @@ def detect(args):
             test_scores = model.potential(test_chunks.to(device), t=torch.ones(test_chunks.size(0), device=device))
             test_scores = test_scores.cpu().numpy()
 
-        if len(np.unique(ground_truth)) > 1:
-            auc_score = roc_auc_score(ground_truth, test_scores)
-            print(f"ROC AUC Score: {auc_score:.4f}")
-        else:
-            print("Ground truth contains only one class, cannot calculate AUC.")
-
-        # --- Calculate Detection and False Alarm Rates ---
-        predicted_anomalies = test_scores > anomaly_threshold
+        predicted_anomalies = (test_scores > anomaly_threshold).astype(int)
         
-        faulty_period_indices = np.where(ground_truth == 1)[0]
-        non_faulty_period_indices = np.where(ground_truth == 0)[0]
+        # --- Calculate and Display All Metrics ---
+        metrics = compute_all_metrics(ground_truth, predicted_anomalies, test_scores)
+        
+        print("Computed Metrics:")
+        for metric_name, metric_value in metrics.items():
+            if isinstance(metric_value, float):
+                print(f"  {metric_name}: {metric_value:.4f}")
+            else:
+                print(f"  {metric_name}: {metric_value}")
 
-        if len(faulty_period_indices) > 0:
-            correctly_identified_faults = np.sum(predicted_anomalies[faulty_period_indices])
-            detection_rate = correctly_identified_faults / len(faulty_period_indices)
-            print(f"Detection Rate (Recall): {detection_rate:.4f}")
-        else:
-            print("No faulty period in ground truth, cannot calculate Detection Rate.")
-
-        if len(non_faulty_period_indices) > 0:
-            incorrectly_flagged_non_faults = np.sum(predicted_anomalies[non_faulty_period_indices])
-            false_alarm_rate = incorrectly_flagged_non_faults / len(non_faulty_period_indices)
-            print(f"False Alarm Rate: {false_alarm_rate:.4f}")
-        else:
-            print("No non-faulty period in ground truth, cannot calculate FPR.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate an EBM model for anomaly detection on preprocessed data.")
