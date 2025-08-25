@@ -9,6 +9,7 @@ from glob import glob
 from sklearn.metrics import roc_auc_score
 from ebm_model_vit import EBViTModelWrapper as EBM
 from metrics import compute_all_metrics
+from utils.utils_visualization import plot_energy_with_anomalies
 
 # --- Main Detection Logic ---
 def detect(args):
@@ -79,6 +80,21 @@ def detect(args):
             test_scores = test_scores.cpu().numpy()
 
         predicted_anomalies = (test_scores > anomaly_threshold).astype(int)
+
+        # # --- Create directory for plots ---
+        # plot_dir = Path("results/plots") / set_name
+        # plot_dir.mkdir(parents=True, exist_ok=True)
+        # plot_path = plot_dir / "energy_plot.png"
+
+        # # --- Plot energy scores ---
+        # plot_energy_with_anomalies(
+        #     energy_scores=test_scores,
+        #     threshold=anomaly_threshold,
+        #     save_path=plot_path,
+        #     title=f"Energy Scores for {set_name}",
+        #     ground_truth_labels=ground_truth,
+        # )
+        # print(f"Energy plot saved to {plot_path}")
         
         # --- Calculate and Display All Metrics ---
         metrics = compute_all_metrics(ground_truth, predicted_anomalies, test_scores)
