@@ -3,113 +3,73 @@ import torch
 from pathlib import Path
 from typing import Optional, Union, List, Tuple
 from matplotlib.backends.backend_pdf import PdfPages
+import numpy as np
 
 
-def plot_signal_and_spectrograms(
-        signal: torch.Tensor,
-        spectrogram: torch.Tensor,
-        batch_idx: int,
-        feature_idx: int,
-        signal_xlim: Optional[Tuple[int, int]] = None,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None
-        ) -> plt.Figure:
+def plot_energy_with_anomalies(
+    energy_scores: Union[torch.Tensor, np.ndarray],
+    threshold: float,
+    save_path: Union[str, Path],
+    title: str = "Energy Scores with Anomaly Threshold",
+    ground_truth_labels: Optional[Union[torch.Tensor, np.ndarray]] = None,
+):
     """
-    Create a figure showing signal, real part, and imaginary part spectrograms for one batch and one feature.
+    Plots the energy scores and highlights anomalous regions based on ground truth or predictions.
 
     Args:
-        signal: Tensor of shape (B, L, F)
-        spectrogram: Tensor of shape (B, 2*F, Freq, Time)
-        batch_idx: Batch index
-        feature_idx: Feature index
-        signal_xlim: Optional (start_idx, end_idx) to limit x-axis of signal plot.
-        vmin: Optional minimum value for spectrogram color scale.
-        vmax: Optional maximum value for spectrogram color scale.
-
-    Returns:
-        plt.Figure
+        energy_scores (Union[torch.Tensor, np.ndarray]): A 1D tensor or array of energy scores.
+        threshold (float): The anomaly threshold.
+        save_path (Union[str, Path]): The path to save the plot.
+        title (str, optional): The title of the plot. Defaults to 'Energy Scores with Anomaly Threshold'.
+        ground_truth_labels (Optional[Union[torch.Tensor, np.ndarray]], optional): 
+            A 1D tensor or array of ground truth labels (1 for anomaly, 0 for normal). 
+            If provided, these will be used to highlight anomalous regions. 
+            Defaults to None, in which case predicted anomalies are highlighted.
     """
-    signal = signal.cpu().detach()
-    spectrogram = spectrogram.cpu().detach()
+    if isinstance(energy_scores, torch.Tensor):
+        energy_scores = energy_scores.cpu().numpy()
 
-    B, L, F = signal.shape
-    _, CF, Freq, Time = spectrogram.shape
-    assert CF == 2 * F, f"Expected spectrogram channels to be 2x features. Got {CF} != 2*{F}"
+    plt.figure(figsize=(12, 6))
+    plt.plot(energy_scores, label="Energy Score")
+    plt.axhline(y=threshold, color="r", linestyle="--", label="Anomaly Threshold")
 
-    real_idx = feature_idx
-    imag_idx = feature_idx + F
-    real_spectrogram = spectrogram[batch_idx, real_idx]
-    imag_spectrogram = spectrogram[batch_idx, imag_idx]
-    selected_signal = signal[batch_idx, :, feature_idx]
+    highlight_label = ""
+    if ground_truth_labels is not None:
+        if isinstance(ground_truth_labels, torch.Tensor):
+            ground_truth_labels = ground_truth_labels.cpu().numpy()
+        anomalous_indices = np.where(ground_truth_labels == 1)[0]
+        highlight_label = "Ground Truth Anomaly"
+    else:
+        anomalous_indices = np.where(energy_scores > threshold)[0]
+        highlight_label = "Predicted Anomaly"
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    if len(anomalous_indices) > 0:
+        # Find contiguous regions of anomalies
+        regions = []
+        start = anomalous_indices[0]
+        for i in range(1, len(anomalous_indices)):
+            if anomalous_indices[i] != anomalous_indices[i - 1] + 1:
+                regions.append((start, anomalous_indices[i - 1]))
+                start = anomalous_indices[i]
+        regions.append((start, anomalous_indices[-1]))
 
-    # Plot signal
-    axes[0].plot(selected_signal.numpy())
-    axes[0].set_title(f"Signal (Batch {batch_idx}, Feature {feature_idx})")
-    axes[0].set_xlabel("Time Step")
-    axes[0].set_ylabel("Amplitude")
-    axes[0].grid(True)
-    if signal_xlim is not None:
-        axes[0].set_xlim(signal_xlim)
+        # Add a single legend entry for all anomalous regions
+        plt.axvspan(
+            regions[0][0],
+            regions[0][1] + 1,
+            color="red",
+            alpha=0.3,
+            label=highlight_label,
+        )
+        for start, end in regions[1:]:
+            plt.axvspan(start, end + 1, color="red", alpha=0.3)
 
-    # Plot real part
-    im1 = axes[1].imshow(real_spectrogram.numpy(), aspect='auto', origin='lower', vmin=vmin, vmax=vmax)
-    axes[1].set_title("Real Part Spectrogram")
-    axes[1].set_xlabel("Time")
-    axes[1].set_ylabel("Frequency Bin")
-    plt.colorbar(im1, ax=axes[1])
-
-    # Plot imaginary part
-    im2 = axes[2].imshow(imag_spectrogram.numpy(), aspect='auto', origin='lower', vmin=vmin, vmax=vmax)
-    axes[2].set_title("Imaginary Part Spectrogram")
-    axes[2].set_xlabel("Time")
-    axes[2].set_ylabel("Frequency Bin")
-    plt.colorbar(im2, ax=axes[2])
-
+    plt.title(title)
+    plt.xlabel("Chunk Index")
+    plt.ylabel("Energy Score")
+    plt.legend()
+    plt.grid(True)
     plt.tight_layout()
-    return fig
+    plt.savefig(save_path)
+    plt.close()
 
-
-def save_feature_plots_to_pdf(
-        signal: torch.Tensor,
-        spectrogram: torch.Tensor,
-        feature_idx: int,
-        pdf_path: Union[str, Path],
-        batch_indices: Optional[List[int]] = None,
-        signal_xlim: Optional[Tuple[int, int]] = None,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
-        dpi: int = 300
-        ) -> None:
-    """
-    Save signal + real/imaginary spectrogram plots for selected feature to a single multi-page PDF.
-
-    Args:
-        signal: Tensor of shape (B, L, F)
-        spectrogram: Tensor of shape (B, 2*F, Freq, Time)
-        feature_idx: Feature index to plot
-        pdf_path: Output PDF file path
-        batch_indices: Optional list of batch indices to plot (default: all batches)
-        signal_xlim: Optional (start_idx, end_idx) for signal plot x-axis range
-        vmin: Optional minimum value for spectrogram color scale.
-        vmax: Optional maximum value for spectrogram color scale.
-        dpi: DPI resolution for saving
-    """
-    pdf_path = Path(pdf_path)
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-
-    signal = signal.cpu()
-    spectrogram = spectrogram.cpu()
-
-    B, _, _ = signal.shape
-    if batch_indices is None:
-        batch_indices = list(range(B))
-
-    with PdfPages(pdf_path) as pdf:
-        for batch_idx in batch_indices:
-            fig = plot_signal_and_spectrograms(signal, spectrogram, batch_idx, feature_idx, signal_xlim, vmin, vmax)
-            pdf.savefig(fig, dpi=dpi)
-            plt.close(fig)
-
-    print(f"Saved {len(batch_indices)} plots for feature {feature_idx} to {pdf_path}")
