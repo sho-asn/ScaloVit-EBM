@@ -36,16 +36,16 @@ def get_args():
     parser.add_argument("--resume_ckpt", type=str, default="", help="Path to checkpoint for resuming training.")
 
     # Training Hyperparameters
-    parser.add_argument("--lr", type=float, default=1.2e-3, help="Learning rate.")
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate.")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size.")
-    parser.add_argument("--total_steps", type=int, default=20000, help="Total training steps.")
-    parser.add_argument("--warmup", type=int, default=1000, help="Learning rate warmup steps.")
-    parser.add_argument("--ema_decay", type=float, default=0.9999, help="EMA decay rate.")
+    parser.add_argument("--total_steps", type=int, default=15000, help="Total training steps.")
+    parser.add_argument("--warmup", type=int, default=10000, help="Learning rate warmup steps.")
+    parser.add_argument("--ema_decay", type=float, default=0.9999, help="EMA decay rate.") # 0.99
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient norm clipping.")
     parser.add_argument("--num_workers", type=int, default=4, help="Dataloader workers.")
 
     # Loss Configuration
-    parser.add_argument("--lambda_cd", type=float, default=0.1, help="Coefficient for Contrastive Divergence loss.")
+    parser.add_argument("--lambda_cd", type=float, default=0.001, help="Coefficient for Contrastive Divergence loss.")
     parser.add_argument("--time_cutoff", type=float, default=1.0, help="Flow loss decays to zero beyond t>=time_cutoff")
     parser.add_argument("--cd_neg_clamp", type=float, default=0.02, help="Clamp negative total CD below -cd_neg_clamp. 0=disable clamp.")
     parser.add_argument("--cd_trim_fraction", type=float, default=0.1, help="Fraction of highest negative energies discarded for CD (0=disable).")
@@ -205,7 +205,7 @@ def train(args):
     start_step = 0
     if args.resume_ckpt and os.path.exists(args.resume_ckpt):
         print(f"Resuming from checkpoint: {args.resume_ckpt}")
-        checkpoint = torch.load(args.resume_ckpt, map_location=device)
+        checkpoint = torch.load(args.resume_ckpt, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint['model'])
         ema_model.load_state_dict(checkpoint['ema_model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
