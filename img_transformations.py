@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 import torch
 import pywt
 import numpy as np
+from scipy.signal import stft
 from utils.utils_data import MinMaxArgs
 
 
@@ -162,3 +163,100 @@ def split_image_into_chunks(image: torch.Tensor, chunk_width: int) -> torch.Tens
     chunks = chunks.view(-1, channels, height, chunk_width) # Flatten B and num_chunks
 
     return chunks
+
+class STFTEmbedder(TsImgEmbedder):
+    """
+    Transforms a time series into a 2-channel image using Short-Time Fourier Transform (STFT).
+    The two channels represent the normalized magnitude and phase of the STFT.
+    """
+    def __init__(self,
+                 device: torch.device,
+                 seq_len: int,
+                 nperseg: int = 256,
+                 noverlap: int = 128,
+                 nfft: int = 256):
+        super().__init__(device, seq_len)
+        self.nperseg = nperseg
+        self.noverlap = noverlap
+        self.nfft = nfft
+        self.min_mag: Optional[torch.Tensor] = None
+        self.max_mag: Optional[torch.Tensor] = None
+        self.min_phase: Optional[torch.Tensor] = None
+        self.max_phase: Optional[torch.Tensor] = None
+
+    def cache_min_max_params(self, train_data: np.ndarray) -> None:
+        """
+        Calculates and caches the min/max of STFT magnitude and phase for each feature.
+        """
+        _, _, Zxx = self._stft_transform_raw(train_data)
+        
+        magnitude = np.abs(Zxx)
+        phase = np.angle(Zxx)
+        
+        num_features = magnitude.shape[1]
+
+        self.min_mag = torch.tensor([np.min(magnitude[:, k, :, :]) for k in range(num_features)])
+        self.max_mag = torch.tensor([np.max(magnitude[:, k, :, :]) for k in range(num_features)])
+        self.min_phase = torch.tensor([np.min(phase[:, k, :, :]) for k in range(num_features)])
+        self.max_phase = torch.tensor([np.max(phase[:, k, :, :]) for k in range(num_features)])
+
+    def _stft_transform_raw(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """ Performs the STFT and returns the raw frequencies, times, and complex values. """
+        num_batches, seq_len, num_features = data.shape
+
+        batch_Zxx = []
+        for b in range(num_batches):
+            feature_Zxx = []
+            for k in range(num_features):
+                signal = data[b, :, k]
+                f, t, Zxx = stft(signal, nperseg=self.nperseg, noverlap=self.noverlap, nfft=self.nfft)
+                feature_Zxx.append(Zxx)
+            stacked_features = np.stack(feature_Zxx, axis=0)
+            batch_Zxx.append(stacked_features)
+        
+        full_Zxx = np.stack(batch_Zxx, axis=0)
+
+        # For STFT, f and t are the same for all batches and features
+        f, t, _ = stft(data[0, :, 0], nperseg=self.nperseg, noverlap=self.noverlap, nfft=self.nfft)
+        return f, t, full_Zxx
+
+    def ts_to_img(self, signal: torch.Tensor) -> torch.Tensor:
+        """
+        Transforms the signal into a 2-channel image of normalized magnitude and phase.
+        """
+        assert self.min_mag is not None, "Normalization parameters not cached. Call `cache_min_max_params` first."
+
+        # Get raw STFT coefficients
+        _, _, Zxx = self._stft_transform_raw(signal.cpu().numpy())
+        
+        # Calculate magnitude and phase
+        magnitude = torch.tensor(np.abs(Zxx), device=self.device)
+        phase = torch.tensor(np.angle(Zxx), device=self.device)
+
+        # Reshape scalers for broadcasting: (1, K, 1, 1)
+        min_mag = self.min_mag.view(1, -1, 1, 1).to(self.device)
+        max_mag = self.max_mag.view(1, -1, 1, 1).to(self.device)
+        min_phase = self.min_phase.view(1, -1, 1, 1).to(self.device)
+        max_phase = self.max_phase.view(1, -1, 1, 1).to(self.device)
+
+        # Normalize magnitude and phase independently
+        norm_magnitude = (MinMaxArgs(magnitude, min_mag, max_mag) - 0.5) * 2
+        norm_phase = (MinMaxArgs(phase, min_phase, max_phase) - 0.5) * 2
+
+        # The output channels for each feature will be [mag, phase]
+        num_batches, num_features, num_freqs, num_times = norm_magnitude.shape
+        
+        output_image = torch.stack([norm_magnitude, norm_phase], dim=2)
+        output_image = output_image.view(num_batches, 2 * num_features, num_freqs, num_times)
+        
+        return output_image
+
+def init_stft_embedder(embedder: "STFTEmbedder", full_train_signal_np: np.ndarray) -> None:
+    """
+    Initializes min/max values for normalization across the whole training signal.
+    Args:
+        embedder (STFTEmbedder): the embedder object.
+        full_train_signal_np (np.ndarray): The entire training time-series data as a numpy array.
+                                             Shape: (1, L, F) for a single batch of the full signal.
+    """
+    embedder.cache_min_max_params(full_train_signal_np)
