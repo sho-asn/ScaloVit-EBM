@@ -3,16 +3,38 @@ import numpy as np
 from pathlib import Path
 import scipy.io as scio
 import os
+import argparse
 
-from img_transformations import WAVEmbedder, init_wav_embedder, split_image_into_chunks
+from img_transformations import (
+    WAVEmbedder, init_wav_embedder, 
+    STFTEmbedder, init_stft_embedder,
+    split_image_into_chunks
+)
+from utils.utils_visualization import plot_stft_images
 
 # --- Configuration ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-CHUNK_WIDTH = 128
-TRAIN_SPLIT_RATIO = 0.8
-DATA_DIR = Path("Datasets") / "CVACaseStudy" / "MFP"
-OUTPUT_DIR = Path("preprocessed_dataset")
-OUTPUT_DIR.mkdir(exist_ok=True)
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Preprocess time series data into image chunks.")
+    parser.add_argument("--transform_type", type=str, default="wavelet", choices=["wavelet", "stft"], help="Type of transform to use.")
+    parser.add_argument("--data_dir", type=str, default="Datasets/CVACaseStudy/MFP", help="Directory of the raw .mat files.")
+    parser.add_argument("--output_dir", type=str, default="preprocessed_dataset", help="Directory to save the processed files.")
+    parser.add_argument("--chunk_width", type=int, default=32, help="Width of the output image chunks.")
+    parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
+
+    # Wavelet specific args
+    parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use.")
+    parser.add_argument("--wavelet_scales_min", type=int, default=1, help="Minimum scale for wavelet transform.")
+    parser.add_argument("--wavelet_scales_max", type=int, default=129, help="Maximum scale for wavelet transform.")
+
+    # STFT specific args
+    parser.add_argument("--stft_nperseg", type=int, default=62, help="Length of each segment for STFT.")
+    parser.add_argument("--stft_noverlap", type=int, default=31, help="Number of points to overlap between segments for STFT.")
+    parser.add_argument("--stft_nfft", type=int, default=62, help="Length of the FFT used for STFT.")
+
+    return parser.parse_args()
+
 
 # --- Ground Truth Label Generation ---
 def get_set_ground_truth(fault_intervals: list, total_chunks: int, chunk_width: int) -> np.ndarray:
@@ -26,12 +48,15 @@ def get_set_ground_truth(fault_intervals: list, total_chunks: int, chunk_width: 
     return labels
 
 # --- Main Preprocessing Logic ---
-def preprocess():
+def preprocess(args):
     print(f"Using device: {device}")
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+    data_dir = Path(args.data_dir)
 
     # --- 1. Load and Prepare Training Data for Fitting the Embedder ---
     print("--- Preparing Training Data ---")
-    training_data_path = DATA_DIR / "Training.mat"
+    training_data_path = data_dir / "Training.mat"
     data = scio.loadmat(training_data_path)
     t1_raw = np.delete(data['T1'], -1, axis=1)
     t2_raw = np.delete(data['T2'], -1, axis=1)
@@ -41,7 +66,7 @@ def preprocess():
     all_train_raw = []
     all_val_raw = []
     for signal_np in [t1_raw, t2_raw, t3_raw]:
-        split_point = int(signal_np.shape[0] * TRAIN_SPLIT_RATIO)
+        split_point = int(signal_np.shape[0] * args.train_split_ratio)
         all_train_raw.append(signal_np[:split_point, :])
         all_val_raw.append(signal_np[split_point:, :])
 
@@ -49,16 +74,28 @@ def preprocess():
     combined_train_raw_np = np.concatenate(all_train_raw, axis=0)
     print(f"Combined raw training data to fit scaler, shape: {combined_train_raw_np.shape}")
 
-    embedder = WAVEmbedder(
-        device=device,
-        seq_len=combined_train_raw_np.shape[0], # This will be dynamically set later
-        wavelet_name='morl',
-        scales_arange=(1, 129)
-    )
+    if args.transform_type == 'wavelet':
+        embedder = WAVEmbedder(
+            device=device,
+            seq_len=combined_train_raw_np.shape[0], # This will be dynamically set later
+            wavelet_name=args.wavelet_name,
+            scales_arange=(args.wavelet_scales_min, args.wavelet_scales_max)
+        )
+        print("Caching wavelet normalization parameters from all training data...")
+        init_wav_embedder(embedder, np.expand_dims(combined_train_raw_np, axis=0))
+    elif args.transform_type == 'stft':
+        embedder = STFTEmbedder(
+            device=device,
+            seq_len=combined_train_raw_np.shape[0], # This will be dynamically set later
+            nperseg=args.stft_nperseg,
+            noverlap=args.stft_noverlap,
+            nfft=args.stft_nfft
+        )
+        print("Caching STFT normalization parameters from all training data...")
+        init_stft_embedder(embedder, np.expand_dims(combined_train_raw_np, axis=0))
+    else:
+        raise ValueError(f"Unknown transform_type: {args.transform_type}")
 
-    print("Caching normalization parameters from all training data...")
-    # The first argument to init_wav_embedder needs to be a (1, L, F) array
-    init_wav_embedder(embedder, np.expand_dims(combined_train_raw_np, axis=0))
     print("Normalization parameters cached.")
 
     # --- 3. Save Normalization Parameters ---
@@ -68,7 +105,7 @@ def preprocess():
         'min_phase': embedder.min_phase.cpu(),
         'max_phase': embedder.max_phase.cpu(),
     }
-    norm_params_path = OUTPUT_DIR / "norm_params.pt"
+    norm_params_path = output_dir / f"norm_params_{args.transform_type}.pt"
     torch.save(norm_params, norm_params_path)
     print(f"Saved normalization parameters to {norm_params_path}")
 
@@ -78,22 +115,28 @@ def preprocess():
     for train_set_np in all_train_raw:
         train_tensor = torch.from_numpy(np.expand_dims(train_set_np, axis=0)).float().to(device)
         embedder.seq_len = train_tensor.shape[1]
-        wavelet_image = embedder.ts_to_img(train_tensor)
-        chunks = split_image_into_chunks(wavelet_image, CHUNK_WIDTH)
+        image = embedder.ts_to_img(train_tensor)
+        chunks = split_image_into_chunks(image, args.chunk_width)
         final_train_chunks.append(chunks)
     final_train_chunks = torch.cat(final_train_chunks, dim=0)
-    torch.save(final_train_chunks, OUTPUT_DIR / "train_chunks.pt")
+    torch.save(final_train_chunks, output_dir / f"train_chunks_{args.transform_type}.pt")
     print(f"Saved {final_train_chunks.shape} total training chunks.")
+
+    if args.transform_type == 'stft':
+        plot_dir = Path("results/plots")
+        plot_dir.mkdir(exist_ok=True)
+        plot_path = plot_dir / "stft_training_images.png"
+        plot_stft_images(final_train_chunks, plot_path)
 
     final_val_chunks = []
     for val_set_np in all_val_raw:
         val_tensor = torch.from_numpy(np.expand_dims(val_set_np, axis=0)).float().to(device)
         embedder.seq_len = val_tensor.shape[1]
-        wavelet_image = embedder.ts_to_img(val_tensor)
-        chunks = split_image_into_chunks(wavelet_image, CHUNK_WIDTH)
+        image = embedder.ts_to_img(val_tensor)
+        chunks = split_image_into_chunks(image, args.chunk_width)
         final_val_chunks.append(chunks)
     final_val_chunks = torch.cat(final_val_chunks, dim=0)
-    torch.save(final_val_chunks.float(), OUTPUT_DIR / "val_chunks.pt")
+    torch.save(final_val_chunks.float(), output_dir / f"val_chunks_{args.transform_type}.pt")
     print(f"Saved {final_val_chunks.shape} total validation chunks.")
 
     # --- 5. Process and Save Test Sets ---
@@ -112,22 +155,22 @@ def preprocess():
     for set_name, case_file, intervals in sets_to_evaluate:
         print(f"Processing {set_name} from {case_file}...")
         try:
-            file_path = DATA_DIR / f"{case_file}.mat"
+            file_path = data_dir / f"{case_file}.mat"
             data = scio.loadmat(file_path)
             raw_signal_np = np.delete(data[set_name], -1, axis=1)
             raw_signal = torch.from_numpy(np.expand_dims(raw_signal_np, axis=0)).float().to(device)
 
             embedder.seq_len = raw_signal.shape[1]
-            wavelet_image = embedder.ts_to_img(raw_signal)
-            test_chunks = split_image_into_chunks(wavelet_image, CHUNK_WIDTH)
+            image = embedder.ts_to_img(raw_signal)
+            test_chunks = split_image_into_chunks(image, args.chunk_width)
 
             if test_chunks.shape[0] == 0:
                 print(f"No chunks generated for {set_name}, skipping.")
                 continue
 
-            ground_truth = get_set_ground_truth(intervals, len(test_chunks), CHUNK_WIDTH)
+            ground_truth = get_set_ground_truth(intervals, len(test_chunks), args.chunk_width)
 
-            save_path = OUTPUT_DIR / f"test_{case_file}_{set_name}.pt"
+            save_path = output_dir / f"test_{case_file}_{set_name}_{args.transform_type}.pt"
             torch.save({'chunks': test_chunks.cpu().float(), 'labels': ground_truth}, save_path)
             print(f"Saved {test_chunks.shape[0]} chunks and labels to {save_path}")
 
@@ -137,4 +180,6 @@ def preprocess():
     print("\nData preparation complete.")
 
 if __name__ == "__main__":
-    preprocess()
+    args = get_args()
+    preprocess(args)
+
