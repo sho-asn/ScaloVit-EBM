@@ -51,7 +51,7 @@ def detect(args):
     # --- 2. Establish Anomaly Threshold from Validation Data ---
     print(f"Calculating energy scores on validation data from {args.val_data_path}...")
     with torch.no_grad():
-        val_scores = model.potential(val_chunks.to(device), t=torch.ones(val_chunks.size(0), device=device))
+        val_scores = model.potential(val_chunks.to(device).float(), t=torch.ones(val_chunks.size(0), device=device))
         val_scores = val_scores.cpu().numpy()
     
     anomaly_threshold = np.percentile(val_scores, args.threshold_percentile)
@@ -59,6 +59,7 @@ def detect(args):
 
     # --- 3. Evaluate on Preprocessed Test Sets ---
     test_files = sorted(glob(os.path.join(args.test_data_dir, "test_*.pt")))
+    test_files = [f for f in test_files if '_stft' not in f] # Filter out stft files
     if not test_files:
         print(f"No preprocessed test files found in {args.test_data_dir}. Please run preprocess_data.py first.")
         return
@@ -81,20 +82,20 @@ def detect(args):
 
         predicted_anomalies = (test_scores > anomaly_threshold).astype(int)
 
-        # # --- Create directory for plots ---
-        # plot_dir = Path("results/plots") / set_name
-        # plot_dir.mkdir(parents=True, exist_ok=True)
-        # plot_path = plot_dir / "energy_plot.png"
+        # --- Create directory for plots ---
+        plot_dir = Path("results/plots") / set_name
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        plot_path = plot_dir / "energy_plot.png"
 
-        # # --- Plot energy scores ---
-        # plot_energy_with_anomalies(
-        #     energy_scores=test_scores,
-        #     threshold=anomaly_threshold,
-        #     save_path=plot_path,
-        #     title=f"Energy Scores for {set_name}",
-        #     ground_truth_labels=ground_truth,
-        # )
-        # print(f"Energy plot saved to {plot_path}")
+        # --- Plot energy scores ---
+        plot_energy_with_anomalies(
+            energy_scores=test_scores,
+            threshold=anomaly_threshold,
+            save_path=plot_path,
+            title=f"Energy Scores for {set_name}",
+            ground_truth_labels=ground_truth,
+        )
+        print(f"Energy plot saved to {plot_path}")
         
         # --- Calculate and Display All Metrics ---
         metrics = compute_all_metrics(ground_truth, predicted_anomalies, test_scores)
@@ -110,7 +111,7 @@ def detect(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate an EBM model for anomaly detection on preprocessed data.")
     parser.add_argument("--ckpt_path", type=str, required=True, help="Path to the model checkpoint file.")
-    parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks.pt", help="Path to the validation data for setting the anomaly threshold.")
+    parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks_wavelet.pt", help="Path to the validation data for setting the anomaly threshold.")
     parser.add_argument("--test_data_dir", type=str, default="preprocessed_dataset", help="Directory containing the preprocessed test set files (*.pt).")
     parser.add_argument("--threshold_percentile", type=float, default=95, help="Percentile of validation scores to use as anomaly threshold.")
     args = parser.parse_args()
