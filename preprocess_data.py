@@ -43,8 +43,16 @@ def get_set_ground_truth(fault_intervals: list, total_chunks: int, chunk_width: 
     for start, end in fault_intervals:
         start_chunk = start // chunk_width
         end_chunk = end // chunk_width
-        if end_chunk < len(labels):
-            labels[start_chunk:end_chunk + 1] = 1
+
+        # If the anomaly starts after the signal ends, skip it.
+        if start_chunk >= total_chunks:
+            continue
+
+        # If the anomaly ends after the signal ends, cap it at the last chunk.
+        effective_end_chunk = min(end_chunk, total_chunks - 1)
+
+        # Label the chunks from the start to the effective (potentially truncated) end.
+        labels[start_chunk : effective_end_chunk + 1] = 1
     return labels
 
 # --- Main Preprocessing Logic ---
