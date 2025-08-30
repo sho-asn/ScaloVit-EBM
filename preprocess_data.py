@@ -20,7 +20,7 @@ def get_args():
     parser.add_argument("--transform_type", type=str, default="wavelet", choices=["wavelet", "stft"], help="Type of transform to use.")
     parser.add_argument("--data_dir", type=str, default="Datasets/CVACaseStudy/MFP", help="Directory of the raw .mat files.")
     parser.add_argument("--output_dir", type=str, default="preprocessed_dataset", help="Directory to save the processed files.")
-    parser.add_argument("--chunk_width", type=int, default=32, help="Width of the output image chunks.")
+    parser.add_argument("--chunk_width", type=int, default=128, help="Width of the output image chunks.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
 
     # Wavelet specific args
@@ -43,16 +43,15 @@ def get_set_ground_truth(fault_intervals: list, total_chunks: int, chunk_width: 
     for start, end in fault_intervals:
         start_chunk = start // chunk_width
         end_chunk = end // chunk_width
-
+        
         # If the anomaly starts after the signal ends, skip it.
         if start_chunk >= total_chunks:
             continue
-
-        # If the anomaly ends after the signal ends, cap it at the last chunk.
+        # If the anomaly ends after the signal ends, cap it at the last
         effective_end_chunk = min(end_chunk, total_chunks - 1)
 
-        # Label the chunks from the start to the effective (potentially truncated) end.
-        labels[start_chunk : effective_end_chunk + 1] = 1
+        # Label the chunks from the start to the effective (truncated) end.
+        labels[start_chunk : effective_end_chunk + 1] = 1 
     return labels
 
 # --- Main Preprocessing Logic ---
