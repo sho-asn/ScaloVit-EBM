@@ -29,8 +29,8 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train an Energy-Based Model for Anomaly Detection using ViT architecture")
     
     # Data and Paths
-    parser.add_argument("--train_data_path", type=str, default="preprocessed_dataset/train_chunks.pt", help="Path to the training data chunks file.")
-    parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks.pt", help="Path to the validation data chunks file.")
+    parser.add_argument("--train_data_path", type=str, default="preprocessed_dataset/train_chunks_wavelet.pt", help="Path to the training data chunks file.")
+    parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks_wavelet.pt", help="Path to the validation data chunks file.")
     parser.add_argument("--output_dir", type=str, default="./results/ebm_training", help="Directory for results and checkpoints.")
     parser.add_argument("--model_name", type=str, default="EBM_scalogram_vit", help="Name for the model and output files.")
     parser.add_argument("--resume_ckpt", type=str, default="", help="Path to checkpoint for resuming training.")
