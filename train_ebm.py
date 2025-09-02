@@ -65,7 +65,7 @@ def get_args():
     parser.add_argument("--num_heads", type=int, default=4, help="Number of attention heads for U-Net.")
     parser.add_argument("--num_head_channels", type=int, default=32, help="Number of channels per U-Net attention head.")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate.")
-    parser.add_argument("--patch_size", type=int, default=4, help="Patch size for the ViT head.")
+    parser.add_argument("--patch_size", type=int, default=16, help="Patch size for the ViT head.")
     parser.add_argument("--embed_dim", type=int, default=192, help="Embedding dimension for ViT head.")
     parser.add_argument("--transformer_nheads", type=int, default=4, help="Number of heads in the ViT encoder.")
     parser.add_argument("--transformer_nlayers", type=int, default=4, help="Number of layers in the ViT encoder.")

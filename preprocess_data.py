@@ -22,7 +22,7 @@ def get_args():
     parser.add_argument("--output_dir", type=str, default="preprocessed_dataset", help="Directory to save the processed files.")
     parser.add_argument("--chunk_width", type=int, default=1024, help="Width of the output image chunks.")
     parser.add_argument("--chunk_stride", type=int, default=128, help="Stride for sliding window chunking.")
-    parser.add_argument("--patch_size", type=int, default=4, help="Patch size used by the model, for labeling.")
+    parser.add_argument("--patch_size", type=int, default=16, help="Patch size used by the model, for labeling.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
 
     # Wavelet specific args
