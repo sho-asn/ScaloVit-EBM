@@ -8,7 +8,7 @@ import argparse
 from img_transformations import (
     WAVEmbedder, init_wav_embedder, 
     STFTEmbedder, init_stft_embedder,
-    split_image_into_chunks
+    split_image_into_chunks_with_stride
 )
 from utils.utils_visualization import plot_stft_images
 
@@ -20,7 +20,9 @@ def get_args():
     parser.add_argument("--transform_type", type=str, default="wavelet", choices=["wavelet", "stft"], help="Type of transform to use.")
     parser.add_argument("--data_dir", type=str, default="Datasets/CVACaseStudy/MFP", help="Directory of the raw .mat files.")
     parser.add_argument("--output_dir", type=str, default="preprocessed_dataset", help="Directory to save the processed files.")
-    parser.add_argument("--chunk_width", type=int, default=128, help="Width of the output image chunks.")
+    parser.add_argument("--chunk_width", type=int, default=1024, help="Width of the output image chunks.")
+    parser.add_argument("--chunk_stride", type=int, default=128, help="Stride for sliding window chunking.")
+    parser.add_argument("--patch_size", type=int, default=4, help="Patch size used by the model, for labeling.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
 
     # Wavelet specific args
@@ -37,22 +39,30 @@ def get_args():
 
 
 # --- Ground Truth Label Generation ---
-def get_set_ground_truth(fault_intervals: list, total_chunks: int, chunk_width: int) -> np.ndarray:
-    """Creates a binary label array (0=normal, 1=anomaly) for each chunk in a set."""
-    labels = np.zeros(total_chunks, dtype=int)
+def get_ground_truth_for_signal(fault_intervals: list, signal_length: int, patch_size: int) -> torch.Tensor:
+    """
+    Creates a single 1D binary label tensor for the entire signal, where each element
+    represents a time window of `patch_size`.
+    """
+    # 1. Create a high-resolution ground truth vector for the entire signal (per time step)
+    ts_labels = np.zeros(signal_length, dtype=int)
     for start, end in fault_intervals:
-        start_chunk = start // chunk_width
-        end_chunk = end // chunk_width
-        
-        # If the anomaly starts after the signal ends, skip it.
-        if start_chunk >= total_chunks:
-            continue
-        # If the anomaly ends after the signal ends, cap it at the last
-        effective_end_chunk = min(end_chunk, total_chunks - 1)
+        start = max(0, start)
+        end = min(signal_length, end)
+        if start < end:
+            ts_labels[start:end] = 1
 
-        # Label the chunks from the start to the effective (truncated) end.
-        labels[start_chunk : effective_end_chunk + 1] = 1 
-    return labels
+    # 2. Create patch-level labels by checking each time window
+    num_patches = signal_length // patch_size
+    patch_labels = np.zeros(num_patches, dtype=int)
+    for i in range(num_patches):
+        start_time = i * patch_size
+        end_time = start_time + patch_size
+        if np.any(ts_labels[start_time:end_time] == 1):
+            patch_labels[i] = 1
+            
+    return torch.from_numpy(patch_labels).long()
+
 
 # --- Main Preprocessing Logic ---
 def preprocess(args):
@@ -84,7 +94,7 @@ def preprocess(args):
     if args.transform_type == 'wavelet':
         embedder = WAVEmbedder(
             device=device,
-            seq_len=combined_train_raw_np.shape[0], # This will be dynamically set later
+            seq_len=combined_train_raw_np.shape[0],
             wavelet_name=args.wavelet_name,
             scales_arange=(args.wavelet_scales_min, args.wavelet_scales_max)
         )
@@ -93,7 +103,7 @@ def preprocess(args):
     elif args.transform_type == 'stft':
         embedder = STFTEmbedder(
             device=device,
-            seq_len=combined_train_raw_np.shape[0], # This will be dynamically set later
+            seq_len=combined_train_raw_np.shape[0],
             nperseg=args.stft_nperseg,
             noverlap=args.stft_noverlap,
             nfft=args.stft_nfft
@@ -123,7 +133,7 @@ def preprocess(args):
         train_tensor = torch.from_numpy(np.expand_dims(train_set_np, axis=0)).float().to(device)
         embedder.seq_len = train_tensor.shape[1]
         image = embedder.ts_to_img(train_tensor)
-        chunks = split_image_into_chunks(image, args.chunk_width)
+        chunks = split_image_into_chunks_with_stride(image, args.chunk_width, args.chunk_stride)
         final_train_chunks.append(chunks)
     final_train_chunks = torch.cat(final_train_chunks, dim=0)
     torch.save(final_train_chunks, output_dir / f"train_chunks_{args.transform_type}.pt")
@@ -140,7 +150,7 @@ def preprocess(args):
         val_tensor = torch.from_numpy(np.expand_dims(val_set_np, axis=0)).float().to(device)
         embedder.seq_len = val_tensor.shape[1]
         image = embedder.ts_to_img(val_tensor)
-        chunks = split_image_into_chunks(image, args.chunk_width)
+        chunks = split_image_into_chunks_with_stride(image, args.chunk_width, args.chunk_stride)
         final_val_chunks.append(chunks)
     final_val_chunks = torch.cat(final_val_chunks, dim=0)
     torch.save(final_val_chunks.float(), output_dir / f"val_chunks_{args.transform_type}.pt")
@@ -165,21 +175,32 @@ def preprocess(args):
             file_path = data_dir / f"{case_file}.mat"
             data = scio.loadmat(file_path)
             raw_signal_np = np.delete(data[set_name], -1, axis=1)
+            
+            signal_len = raw_signal_np.shape[0]
             raw_signal = torch.from_numpy(np.expand_dims(raw_signal_np, axis=0)).float().to(device)
 
             embedder.seq_len = raw_signal.shape[1]
             image = embedder.ts_to_img(raw_signal)
-            test_chunks = split_image_into_chunks(image, args.chunk_width)
+            test_chunks = split_image_into_chunks_with_stride(image, args.chunk_width, args.chunk_stride)
 
             if test_chunks.shape[0] == 0:
                 print(f"No chunks generated for {set_name}, skipping.")
                 continue
 
-            ground_truth = get_set_ground_truth(intervals, len(test_chunks), args.chunk_width)
+            ground_truth = get_ground_truth_for_signal(
+                fault_intervals=intervals,
+                signal_length=signal_len,
+                patch_size=args.patch_size
+            )
 
             save_path = output_dir / f"test_{case_file}_{set_name}_{args.transform_type}.pt"
-            torch.save({'chunks': test_chunks.cpu().float(), 'labels': ground_truth}, save_path)
-            print(f"Saved {test_chunks.shape[0]} chunks and labels to {save_path}")
+            torch.save({
+                'chunks': test_chunks.cpu().float(), 
+                'labels': ground_truth,
+                'signal_len': signal_len,
+                'stride': args.chunk_stride
+            }, save_path)
+            print(f"Saved {test_chunks.shape[0]} chunks and labels of shape {ground_truth.shape} to {save_path}")
 
         except (FileNotFoundError, KeyError) as e:
             print(f"Could not process {set_name} from {case_file}. Reason: {e}")
@@ -189,4 +210,3 @@ def preprocess(args):
 if __name__ == "__main__":
     args = get_args()
     preprocess(args)
-
