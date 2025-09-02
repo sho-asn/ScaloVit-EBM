@@ -196,8 +196,6 @@ def split_image_into_chunks_with_stride(image: torch.Tensor, chunk_width: int, s
 
 
 class STFTEmbedder(TsImgEmbedder):
-
-class STFTEmbedder(TsImgEmbedder):
     """
     Transforms a time series into a 2-channel image using Short-Time Fourier Transform (STFT).
     The two channels represent the normalized magnitude and phase of the STFT.
