@@ -126,10 +126,12 @@ def forward_all(model, flow_matcher, x_real_flow, x_real_cd, args):
             neg_energy = model.potential(x_neg, torch.ones_like(t))
 
             if args.cd_trim_fraction > 0.0:
-                B = neg_energy.size(0)
-                k = int(args.cd_trim_fraction * B)
+                # With per-patch energies, neg_energy is (B, N). We trim a fraction of all patch energies.
+                total_patch_energies = neg_energy.numel()
+                k = int(args.cd_trim_fraction * total_patch_energies)
                 if k > 0:
-                    neg_sorted, _ = neg_energy.sort()
+                    # Flatten to sort all patch energies together, then trim the k highest.
+                    neg_sorted, _ = neg_energy.view(-1).sort()
                     neg_trimmed = neg_sorted[:-k]
                     neg_stat = neg_trimmed.mean()
                 else:
