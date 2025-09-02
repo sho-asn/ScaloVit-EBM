@@ -177,7 +177,7 @@ class EBViTModelWrapper(UNetModelWrapper):
 
     def potential(self, x, t):
         """
-        Computes scalar potential V(x,t) => shape (B,).
+        Computes per-patch potential V(x,t) => shape (B, N), where N is the number of patches.
         Ignores the provided time and always uses a fixed dummy time.
         """
         t_dummy = dummy_time(x, value=0.5)
@@ -188,10 +188,11 @@ class EBViTModelWrapper(UNetModelWrapper):
         tokens = self.patch_embed(unet_out)
         # Transformer: (B, N, embed_dim)
         encoded = self.transformer_encoder(tokens)
-        # Mean-pool across tokens: (B, embed_dim)
-        pooled = encoded.mean(dim=1)
-        # Final linear to scalar: (B, 1) -> (B,)
-        V = self.final_linear(pooled).view(-1)
+        # Apply final linear layer to each patch token to get per-patch scores
+        # encoded shape: (B, N, embed_dim) -> V shape: (B, N, 1)
+        V = self.final_linear(encoded)
+        # Squeeze to get per-patch energies: (B, N)
+        V = V.squeeze(-1)
         V = V * self.output_scale
         if self.energy_clamp is not None:
             V = soft_clamp(V, self.energy_clamp)
@@ -200,15 +201,19 @@ class EBViTModelWrapper(UNetModelWrapper):
     def velocity(self, x, t):
         """
         Computes -∂V/∂x => shape (B, C, H, W).
+        The gradient is computed from the sum of all patch energies.
         Ignores the provided time.
         """
         with torch.enable_grad():
             x = x.clone().detach().requires_grad_(True)
+            # V has shape (B, N), where N is the number of patches
             V = self.potential(x, t)
+            # Sum the energies to get a scalar value for gradient calculation
+            V_sum = V.sum()
             dVdx = torch.autograd.grad(
-                outputs=V,
+                outputs=V_sum,
                 inputs=x,
-                grad_outputs=torch.ones_like(V),
+                grad_outputs=torch.ones_like(V_sum),
                 create_graph=True
             )[0]
             return -dVdx
