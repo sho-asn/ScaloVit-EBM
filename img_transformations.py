@@ -164,6 +164,39 @@ def split_image_into_chunks(image: torch.Tensor, chunk_width: int) -> torch.Tens
 
     return chunks
 
+
+def split_image_into_chunks_with_stride(image: torch.Tensor, chunk_width: int, stride: int) -> torch.Tensor:
+    """
+    Splits a 4D image tensor (B, C, H, W) into chunks along the Width (W) dimension using a sliding window.
+    This implementation uses torch.unfold for efficiency and handles batch processing correctly.
+
+    Args:
+        image (torch.Tensor): The input 4D tensor. Shape: (B, C, H, W).
+        chunk_width (int): The width of each chunk.
+        stride (int): The step size to move the window.
+
+    Returns:
+        torch.Tensor: A new tensor containing the image chunks.
+                      Shape: (num_total_chunks, C, H, chunk_width), where
+                      num_total_chunks is the total number of chunks from all images in the batch.
+    """
+    batch_size, channels, height, width = image.shape
+
+    # Use unfold to create sliding window views from the images.
+    # The result is (B, C, H, num_chunks, chunk_width)
+    unfolded = image.unfold(3, chunk_width, stride)
+
+    # Permute to bring num_chunks next to the batch dimension: (B, num_chunks, C, H, chunk_width)
+    unfolded = unfolded.permute(0, 3, 1, 2, 4)
+
+    # Reshape to combine batch and chunk dimensions: (B * num_chunks, C, H, chunk_width)
+    chunks = unfolded.reshape(-1, channels, height, chunk_width)
+
+    return chunks
+
+
+class STFTEmbedder(TsImgEmbedder):
+
 class STFTEmbedder(TsImgEmbedder):
     """
     Transforms a time series into a 2-channel image using Short-Time Fourier Transform (STFT).
