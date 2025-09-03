@@ -99,8 +99,13 @@ def detect(args):
     # --- 2. Establish Anomaly Threshold from Validation Data ---
     print(f"Calculating energy scores on validation data from {args.val_data_path}...")
     with torch.no_grad():
-        # For validation, we still use the mean score of all patches to get a stable threshold
-        val_scores_per_patch = model.potential(val_chunks.to(device).float(), t=torch.ones(val_chunks.size(0), device=device))
+        all_val_scores_per_patch = []
+        for i in range(0, len(val_chunks), args.batch_size):
+            batch = val_chunks[i:i+args.batch_size].to(device).float()
+            scores_per_patch = model.potential(batch, t=torch.ones(batch.size(0), device=device))
+            all_val_scores_per_patch.append(scores_per_patch)
+        
+        val_scores_per_patch = torch.cat(all_val_scores_per_patch, dim=0)
         val_scores = val_scores_per_patch.mean(dim=1).cpu().numpy()
     
     anomaly_threshold = np.percentile(val_scores, args.threshold_percentile)
@@ -128,7 +133,13 @@ def detect(args):
             continue
 
         with torch.no_grad():
-            test_scores_per_patch = model.potential(test_chunks.to(device), t=torch.ones(test_chunks.size(0), device=device))
+            all_test_scores_per_patch = []
+            for i in range(0, len(test_chunks), args.batch_size):
+                batch = test_chunks[i:i+args.batch_size].to(device)
+                scores_per_patch = model.potential(batch, t=torch.ones(batch.size(0), device=device))
+                all_test_scores_per_patch.append(scores_per_patch)
+            
+            test_scores_per_patch = torch.cat(all_test_scores_per_patch, dim=0)
             test_scores_per_patch = test_scores_per_patch.cpu().numpy()
 
         # Reconstruct the 1D timeline of scores from the overlapping chunks
@@ -178,5 +189,6 @@ if __name__ == "__main__":
     parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks_wavelet.pt", help="Path to the validation data for setting the anomaly threshold.")
     parser.add_argument("--test_data_dir", type=str, default="preprocessed_dataset", help="Directory containing the preprocessed test set files (*.pt).")
     parser.add_argument("--threshold_percentile", type=float, default=95, help="Percentile of validation scores to use as anomaly threshold.")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for processing data to avoid OOM errors.")
     args = parser.parse_args()
     detect(args)
