@@ -24,7 +24,7 @@ def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, 
         image_height (int): The height of the chunk image (e.g., number of wavelet scales).
 
     Returns:
-        np.ndarray: A 1D array of anomaly scores for the entire signal, with one score per patch_size window.
+        np.ndarray: A 1D array of anomaly scores for the portion of the signal covered by the chunks.
     """
     patches_per_chunk_h = image_height // patch_size
     patches_per_chunk_w = chunk_width // patch_size
@@ -53,10 +53,17 @@ def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, 
                 score_count[global_patch_idx] += 1
 
     # Compute the average score, handle division by zero for any uncovered patches
-    # (though with typical stride, all patches should be covered)
     final_scores = np.divide(score_sum, score_count, out=np.zeros_like(score_sum), where=score_count!=0)
     
-    return final_scores
+    # Find the last patch that was actually covered by at least one chunk
+    if np.any(score_count > 0):
+        last_covered_idx = np.where(score_count > 0)[0][-1]
+    else:
+        # Handle case where no scores were recorded at all
+        return np.array([])
+
+    # Truncate the scores and ground truth to only the parts that were covered
+    return final_scores[:last_covered_idx + 1]
 
 
 # --- Main Detection Logic ---
@@ -112,10 +119,23 @@ def detect(args):
     print(f"Anomaly threshold set to {anomaly_threshold:.4f}")
 
     # --- 3. Evaluate on Preprocessed Test Sets ---
+    is_mag_only = "mag" in args.val_data_path
+    
     test_files = sorted(glob(os.path.join(args.test_data_dir, "test_*.pt")))
-    test_files = [f for f in test_files if '_stft' not in f] # Filter out stft files
+    
+    # Filter files to match the model type (mag-only or mag+phase)
+    if is_mag_only:
+        print("--- Running in magnitude-only mode: selecting '*_mag.pt' test files. ---")
+        test_files = [f for f in test_files if '_mag' in Path(f).name]
+    else:
+        print("--- Running in magnitude-and-phase mode: excluding '*_mag.pt' test files. ---")
+        test_files = [f for f in test_files if '_mag' not in Path(f).name]
+
+    # Further filter out any STFT files if they exist
+    test_files = [f for f in test_files if '_stft' not in Path(f).name]
+
     if not test_files:
-        print(f"No preprocessed test files found in {args.test_data_dir}. Please run preprocess_data.py first.")
+        print(f"No preprocessed test files found in {args.test_data_dir} matching the model type. Please run preprocess_data.py first.")
         return
 
     for test_file_path in test_files:
@@ -186,7 +206,7 @@ def detect(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate an EBM model for anomaly detection on preprocessed data.")
     parser.add_argument("--ckpt_path", type=str, required=True, help="Path to the model checkpoint file.")
-    parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks_wavelet.pt", help="Path to the validation data for setting the anomaly threshold.")
+    parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks_wavelet_mag.pt", help="Path to the validation data for setting the anomaly threshold.")
     parser.add_argument("--test_data_dir", type=str, default="preprocessed_dataset", help="Directory containing the preprocessed test set files (*.pt).")
     parser.add_argument("--threshold_percentile", type=float, default=95, help="Percentile of validation scores to use as anomaly threshold.")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for processing data to avoid OOM errors.")
