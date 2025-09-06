@@ -24,6 +24,7 @@ def get_args():
     parser.add_argument("--chunk_stride", type=int, default=128, help="Stride for sliding window chunking.")
     parser.add_argument("--patch_size", type=int, default=16, help="Patch size used by the model, for labeling.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
+    parser.add_argument("--include_phase", action="store_true", help="If set, include phase in the output image. Otherwise, only magnitude is used.")
 
     # Wavelet specific args
     parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use.")
@@ -64,12 +65,61 @@ def get_ground_truth_for_signal(fault_intervals: list, signal_length: int, patch
     return torch.from_numpy(patch_labels).long()
 
 
+# --- Helper Functions for Preprocessing ---
+def transform_and_chunk_signal(
+    signal_np: np.ndarray,
+    embedder,
+    args,
+    device
+) -> torch.Tensor:
+    """
+    Transforms a single raw signal numpy array to an image and splits it into chunks.
+    """
+    signal_tensor = torch.from_numpy(np.expand_dims(signal_np, axis=0)).float().to(device)
+    embedder.seq_len = signal_tensor.shape[1]
+    image = embedder.ts_to_img(signal_tensor)
+    
+    if not args.include_phase:
+        # Keep only magnitude channels (even indices)
+        image = image[:, ::2, :, :]
+
+    return split_image_into_chunks_with_stride(image, args.chunk_width, args.chunk_stride)
+
+def process_signal_list(
+    raw_signals: list, 
+    embedder, 
+    args, 
+    device,
+    set_name: str
+) -> torch.Tensor:
+    """
+    Processes a list of raw signal numpy arrays and returns a concatenated tensor of chunks.
+    """
+    all_chunks = []
+    for i, signal_np in enumerate(raw_signals):
+        print(f"  Processing {set_name} set part {i+1}/{len(raw_signals)}...")
+        chunks = transform_and_chunk_signal(signal_np, embedder, args, device)
+        all_chunks.append(chunks)
+    
+    if not all_chunks:
+        return torch.empty(0)
+    return torch.cat(all_chunks, dim=0)
+
+
 # --- Main Preprocessing Logic ---
 def preprocess(args):
     print(f"Using device: {device}")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
     data_dir = Path(args.data_dir)
+
+    # Define file suffix based on args
+    file_suffix = f"_{args.transform_type}"
+    if not args.include_phase:
+        file_suffix += "_mag"
+        print("--- Processing in magnitude-only mode ---")
+    else:
+        print("--- Processing in magnitude-and-phase mode ---")
 
     # --- 1. Load and Prepare Training Data for Fitting the Embedder ---
     print("--- Preparing Training Data ---")
@@ -119,41 +169,29 @@ def preprocess(args):
     norm_params = {
         'min_mag': embedder.min_mag.cpu(),
         'max_mag': embedder.max_mag.cpu(),
-        'min_phase': embedder.min_phase.cpu(),
-        'max_phase': embedder.max_phase.cpu(),
     }
-    norm_params_path = output_dir / f"norm_params_{args.transform_type}.pt"
+    if args.include_phase:
+        norm_params['min_phase'] = embedder.min_phase.cpu()
+        norm_params['max_phase'] = embedder.max_phase.cpu()
+    
+    norm_params_path = output_dir / f"norm_params{file_suffix}.pt"
     torch.save(norm_params, norm_params_path)
     print(f"Saved normalization parameters to {norm_params_path}")
 
     # --- 4. Transform and Save Train/Val Chunks ---
     print("--- Processing and Saving Train/Val Sets ---")
-    final_train_chunks = []
-    for train_set_np in all_train_raw:
-        train_tensor = torch.from_numpy(np.expand_dims(train_set_np, axis=0)).float().to(device)
-        embedder.seq_len = train_tensor.shape[1]
-        image = embedder.ts_to_img(train_tensor)
-        chunks = split_image_into_chunks_with_stride(image, args.chunk_width, args.chunk_stride)
-        final_train_chunks.append(chunks)
-    final_train_chunks = torch.cat(final_train_chunks, dim=0)
-    torch.save(final_train_chunks, output_dir / f"train_chunks_{args.transform_type}.pt")
+    final_train_chunks = process_signal_list(all_train_raw, embedder, args, device, "training")
+    torch.save(final_train_chunks, output_dir / f"train_chunks{file_suffix}.pt")
     print(f"Saved {final_train_chunks.shape} total training chunks.")
 
     if args.transform_type == 'stft':
         plot_dir = Path("results/plots")
         plot_dir.mkdir(exist_ok=True)
-        plot_path = plot_dir / "stft_training_images.png"
+        plot_path = plot_dir / f"stft_training_images{file_suffix}.png"
         plot_stft_images(final_train_chunks, plot_path)
 
-    final_val_chunks = []
-    for val_set_np in all_val_raw:
-        val_tensor = torch.from_numpy(np.expand_dims(val_set_np, axis=0)).float().to(device)
-        embedder.seq_len = val_tensor.shape[1]
-        image = embedder.ts_to_img(val_tensor)
-        chunks = split_image_into_chunks_with_stride(image, args.chunk_width, args.chunk_stride)
-        final_val_chunks.append(chunks)
-    final_val_chunks = torch.cat(final_val_chunks, dim=0)
-    torch.save(final_val_chunks.float(), output_dir / f"val_chunks_{args.transform_type}.pt")
+    final_val_chunks = process_signal_list(all_val_raw, embedder, args, device, "validation")
+    torch.save(final_val_chunks.float(), output_dir / f"val_chunks{file_suffix}.pt")
     print(f"Saved {final_val_chunks.shape} total validation chunks.")
 
     # --- 5. Process and Save Test Sets ---
@@ -177,11 +215,7 @@ def preprocess(args):
             raw_signal_np = np.delete(data[set_name], -1, axis=1)
             
             signal_len = raw_signal_np.shape[0]
-            raw_signal = torch.from_numpy(np.expand_dims(raw_signal_np, axis=0)).float().to(device)
-
-            embedder.seq_len = raw_signal.shape[1]
-            image = embedder.ts_to_img(raw_signal)
-            test_chunks = split_image_into_chunks_with_stride(image, args.chunk_width, args.chunk_stride)
+            test_chunks = transform_and_chunk_signal(raw_signal_np, embedder, args, device)
 
             if test_chunks.shape[0] == 0:
                 print(f"No chunks generated for {set_name}, skipping.")
@@ -193,7 +227,7 @@ def preprocess(args):
                 patch_size=args.patch_size
             )
 
-            save_path = output_dir / f"test_{case_file}_{set_name}_{args.transform_type}.pt"
+            save_path = output_dir / f"test_{case_file}_{set_name}{file_suffix}.pt"
             torch.save({
                 'chunks': test_chunks.cpu().float(), 
                 'labels': ground_truth,
