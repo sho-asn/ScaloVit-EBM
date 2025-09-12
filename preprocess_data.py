@@ -20,11 +20,12 @@ def get_args():
     parser.add_argument("--transform_type", type=str, default="wavelet", choices=["wavelet", "stft"], help="Type of transform to use.")
     parser.add_argument("--data_dir", type=str, default="Datasets/CVACaseStudy/MFP", help="Directory of the raw .mat files.")
     parser.add_argument("--output_dir", type=str, default="preprocessed_dataset", help="Directory to save the processed files.")
-    parser.add_argument("--chunk_width", type=int, default=1024, help="Width of the output image chunks.")
-    parser.add_argument("--chunk_stride", type=int, default=128, help="Stride for sliding window chunking.")
+    parser.add_argument("--chunk_width", type=int, default=128, help="Width of the output image chunks.")
+    parser.add_argument("--chunk_stride", type=int, default=0, help="Stride for sliding window chunking.")
     parser.add_argument("--patch_size", type=int, default=16, help="Patch size used by the model, for labeling.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
     parser.add_argument("--include_phase", action="store_true", help="If set, include phase in the output image. Otherwise, only magnitude is used.")
+    parser.add_argument("--no_overlap", action="store_true", help="If set, creates non-overlapping chunks by setting stride equal to chunk_width.")
 
     # Wavelet specific args
     parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use.")
@@ -112,6 +113,11 @@ def preprocess(args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
     data_dir = Path(args.data_dir)
+
+    # Handle non-overlapping chunk case
+    if args.no_overlap:
+        args.chunk_stride = args.chunk_width
+        print(f"--- Non-overlapping chunks enabled: stride set to chunk_width ({args.chunk_width}) ---")
 
     # Define file suffix based on args
     file_suffix = f"_{args.transform_type}"

@@ -184,9 +184,10 @@ class EBViTModelWrapper(UNetModelWrapper):
         # Head for single global energy score
         self.global_head = nn.Linear(embed_dim, 1)
 
-    def potential(self, x, t):
+    def potential(self, x, t, return_features=False):
         """
         Computes a combined local and global potential V(x,t) => shape (B, N).
+        If return_features is True, also returns the global token and per-patch embeddings.
         Ignores the provided time and always uses a fixed dummy time.
         """
         t_dummy = dummy_time(x, value=0.5)
@@ -215,6 +216,9 @@ class EBViTModelWrapper(UNetModelWrapper):
         V = V * self.output_scale
         if self.energy_clamp is not None:
             V = soft_clamp(V, self.energy_clamp)
+        
+        if return_features:
+            return V, global_token, encoded
         return V
 
     def velocity(self, x, t):
