@@ -20,18 +20,23 @@ def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, 
         signal_len (int): The length of the original signal.
         chunk_width (int): The width of each chunk (in time steps).
         stride (int): The stride of the sliding window.
-        patch_size (int): The size of a patch.
+        patch_size (tuple or int): The size of a patch (height, width). If int, assumes square.
         image_height (int): The height of the chunk image (e.g., number of wavelet scales).
 
     Returns:
         np.ndarray: A 1D array of anomaly scores for the portion of the signal covered by the chunks.
     """
-    patches_per_chunk_h = image_height // patch_size
-    patches_per_chunk_w = chunk_width // patch_size
-    num_signal_patches = signal_len // patch_size
+    if isinstance(patch_size, int):
+        patch_size = (patch_size, patch_size)
+    patch_height, patch_width = patch_size
 
-    score_sum = np.zeros(num_signal_patches)
-    score_count = np.zeros(num_signal_patches)
+    patches_per_chunk_h = image_height // patch_height
+    patches_per_chunk_w = chunk_width // patch_width
+    num_signal_patches = signal_len // patch_width
+
+    # Initialize with a very small number to correctly find the max
+    score_max = np.full(num_signal_patches, -np.inf, dtype=np.float32)
+    covered_patches = np.zeros(num_signal_patches, dtype=bool)
 
     num_chunks = scores.shape[0]
 
@@ -40,24 +45,25 @@ def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, 
         chunk_scores_grid = scores[i].reshape((patches_per_chunk_h, patches_per_chunk_w))
         
         # Average scores vertically to get one score per time-patch
+        # (If patch_height == image_height, this is just a squeeze)
         time_patch_scores = chunk_scores_grid.mean(axis=0)
         
         chunk_start_time = i * stride
         
         for j in range(patches_per_chunk_w):
             # Calculate the global index in the final 1D score timeline
-            global_patch_idx = (chunk_start_time // patch_size) + j
+            global_patch_idx = (chunk_start_time // patch_width) + j
             
             if global_patch_idx < num_signal_patches:
-                score_sum[global_patch_idx] += time_patch_scores[j]
-                score_count[global_patch_idx] += 1
+                score_max[global_patch_idx] = np.maximum(score_max[global_patch_idx], time_patch_scores[j])
+                covered_patches[global_patch_idx] = True
 
-    # Compute the average score, handle division by zero for any uncovered patches
-    final_scores = np.divide(score_sum, score_count, out=np.zeros_like(score_sum), where=score_count!=0)
+    # Replace any scores for uncovered patches with 0
+    final_scores = np.where(covered_patches, score_max, 0)
     
     # Find the last patch that was actually covered by at least one chunk
-    if np.any(score_count > 0):
-        last_covered_idx = np.where(score_count > 0)[0][-1]
+    if np.any(covered_patches):
+        last_covered_idx = np.where(covered_patches)[0][-1]
     else:
         # Handle case where no scores were recorded at all
         return np.array([])

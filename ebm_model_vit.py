@@ -24,18 +24,20 @@ class PatchEmbed(nn.Module):
         include_pos_embed=True
     ):
         super().__init__()
+        if isinstance(patch_size, int):
+            patch_size = (patch_size, patch_size)
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        self.num_patches_h = image_size[0] // patch_size
-        self.num_patches_w = image_size[1] // patch_size
+        self.num_patches_h = image_size[0] // self.patch_size[0]
+        self.num_patches_w = image_size[1] // self.patch_size[1]
         self.num_patches = self.num_patches_h * self.num_patches_w
 
         # Patch embedding via Conv2d
         self.patch_embed = nn.Conv2d(
             in_channels,
             embed_dim,
-            kernel_size=patch_size,
-            stride=patch_size
+            kernel_size=self.patch_size,
+            stride=self.patch_size
         )
 
         # Optional learnable positional embeddings
@@ -92,10 +94,7 @@ def dummy_time(x, value=0.5):
 class EBViTModelWrapper(UNetModelWrapper):
     """
     Energy-Based Model with a patch-based ViT on top of the UNet output.
-    This version features a DUAL-HEAD energy output:
-    1. A per-patch (local) head for fine-grained energy scores.
-    2. A global head that pools token information for a single global energy score.
-    The final energy is a weighted sum of the local and global scores.
+    This version computes a per-patch (local) energy score for each input patch.
 
     Ignores the input time; always feeds a fixed dummy time to the UNet.
     Note: potential() and velocity() now accept (x, t) where t is ignored.
@@ -126,7 +125,6 @@ class EBViTModelWrapper(UNetModelWrapper):
         transformer_nlayers=2,
         include_pos_embed=True,
         # EBM extras
-        global_energy_weight=1.0, # Weight for the global energy head
         output_scale=1000.0,
         energy_clamp=None,
         **kwargs
@@ -153,7 +151,6 @@ class EBViTModelWrapper(UNetModelWrapper):
         self.out_channels = dim[0]
         self.output_scale = output_scale
         self.energy_clamp = energy_clamp
-        self.global_energy_weight = global_energy_weight
 
         # 1) PatchEmbed for the UNet output
         self.patch_embed = PatchEmbed(
@@ -178,16 +175,13 @@ class EBViTModelWrapper(UNetModelWrapper):
             num_layers=transformer_nlayers
         )
 
-        # 3) Dual Energy Heads
-        # Head for per-patch (local) energy scores
-        self.local_head = nn.Linear(embed_dim, 1)
-        # Head for single global energy score
-        self.global_head = nn.Linear(embed_dim, 1)
+        # 3) Single Energy Head
+        # Head for per-patch energy scores
+        self.final_linear = nn.Linear(embed_dim, 1)
 
-    def potential(self, x, t, return_features=False):
+    def potential(self, x, t):
         """
-        Computes a combined local and global potential V(x,t) => shape (B, N).
-        If return_features is True, also returns the global token and per-patch embeddings.
+        Computes per-patch potential V(x,t) => shape (B, N), where N is the number of patches.
         Ignores the provided time and always uses a fixed dummy time.
         """
         t_dummy = dummy_time(x, value=0.5)
@@ -197,28 +191,14 @@ class EBViTModelWrapper(UNetModelWrapper):
         tokens = self.patch_embed(unet_out)
         # Transformer: (B, N, embed_dim)
         encoded = self.transformer_encoder(tokens)
-
-        # --- Dual-Head Energy Calculation ---
-
-        # 1. Local Head: Get per-patch energy scores
-        V_local = self.local_head(encoded)  # Shape: (B, N, 1)
-
-        # 2. Global Head: Pool tokens and get a single energy score
-        global_token = torch.mean(encoded, dim=1)  # Shape: (B, E)
-        V_global = self.global_head(global_token)    # Shape: (B, 1)
-
-        # 3. Combine Scores
-        # Add the global energy to each patch's local energy.
-        # V_local is (B, N, 1), V_global is (B, 1). Squeeze V_local and broadcast V_global.
-        V = V_local.squeeze(-1) + self.global_energy_weight * V_global
-
-        # Apply final scaling and clamping
+        # Apply final linear layer to each patch token to get per-patch scores
+        # encoded shape: (B, N, embed_dim) -> V shape: (B, N, 1)
+        V = self.final_linear(encoded)
+        # Squeeze to get per-patch energies: (B, N)
+        V = V.squeeze(-1)
         V = V * self.output_scale
         if self.energy_clamp is not None:
             V = soft_clamp(V, self.energy_clamp)
-        
-        if return_features:
-            return V, global_token, encoded
         return V
 
     def velocity(self, x, t):

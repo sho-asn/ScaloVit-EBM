@@ -20,12 +20,11 @@ def get_args():
     parser.add_argument("--transform_type", type=str, default="wavelet", choices=["wavelet", "stft"], help="Type of transform to use.")
     parser.add_argument("--data_dir", type=str, default="Datasets/CVACaseStudy/MFP", help="Directory of the raw .mat files.")
     parser.add_argument("--output_dir", type=str, default="preprocessed_dataset", help="Directory to save the processed files.")
-    parser.add_argument("--chunk_width", type=int, default=128, help="Width of the output image chunks.")
-    parser.add_argument("--chunk_stride", type=int, default=0, help="Stride for sliding window chunking.")
-    parser.add_argument("--patch_size", type=int, default=16, help="Patch size used by the model, for labeling.")
+    parser.add_argument("--chunk_width", type=int, default=1024, help="Width of the output image chunks.")
+    parser.add_argument("--chunk_stride", type=int, default=128, help="Stride for sliding window chunking.")
+    parser.add_argument("--patch_size", type=int, nargs=2, default=[128, 8], help="Patch size (height, width) used by the model, for labeling.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
     parser.add_argument("--include_phase", action="store_true", help="If set, include phase in the output image. Otherwise, only magnitude is used.")
-    parser.add_argument("--no_overlap", action="store_true", help="If set, creates non-overlapping chunks by setting stride equal to chunk_width.")
 
     # Wavelet specific args
     parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use.")
@@ -41,10 +40,10 @@ def get_args():
 
 
 # --- Ground Truth Label Generation ---
-def get_ground_truth_for_signal(fault_intervals: list, signal_length: int, patch_size: int) -> torch.Tensor:
+def get_ground_truth_for_signal(fault_intervals: list, signal_length: int, patch_width: int) -> torch.Tensor:
     """
     Creates a single 1D binary label tensor for the entire signal, where each element
-    represents a time window of `patch_size`.
+    represents a time window of `patch_width`.
     """
     # 1. Create a high-resolution ground truth vector for the entire signal (per time step)
     ts_labels = np.zeros(signal_length, dtype=int)
@@ -55,11 +54,11 @@ def get_ground_truth_for_signal(fault_intervals: list, signal_length: int, patch
             ts_labels[start:end] = 1
 
     # 2. Create patch-level labels by checking each time window
-    num_patches = signal_length // patch_size
+    num_patches = signal_length // patch_width
     patch_labels = np.zeros(num_patches, dtype=int)
     for i in range(num_patches):
-        start_time = i * patch_size
-        end_time = start_time + patch_size
+        start_time = i * patch_width
+        end_time = start_time + patch_width
         if np.any(ts_labels[start_time:end_time] == 1):
             patch_labels[i] = 1
             
@@ -113,11 +112,6 @@ def preprocess(args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
     data_dir = Path(args.data_dir)
-
-    # Handle non-overlapping chunk case
-    if args.no_overlap:
-        args.chunk_stride = args.chunk_width
-        print(f"--- Non-overlapping chunks enabled: stride set to chunk_width ({args.chunk_width}) ---")
 
     # Define file suffix based on args
     file_suffix = f"_{args.transform_type}"
@@ -230,7 +224,7 @@ def preprocess(args):
             ground_truth = get_ground_truth_for_signal(
                 fault_intervals=intervals,
                 signal_length=signal_len,
-                patch_size=args.patch_size
+                patch_width=args.patch_size[1]
             )
 
             save_path = output_dir / f"test_{case_file}_{set_name}{file_suffix}.pt"

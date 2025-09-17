@@ -65,13 +65,12 @@ def get_args():
     parser.add_argument("--num_heads", type=int, default=4, help="Number of attention heads for U-Net.")
     parser.add_argument("--num_head_channels", type=int, default=64, help="Number of channels per U-Net attention head.")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate.")
-    parser.add_argument("--patch_size", type=int, default=16, help="Patch size for the ViT head.")
+    parser.add_argument("--patch_size", type=int, nargs=2, default=[128, 8], help="Patch size for the ViT head (height, width).")
     parser.add_argument("--embed_dim", type=int, default=384, help="Embedding dimension for ViT head.")
     parser.add_argument("--transformer_nheads", type=int, default=4, help="Number of heads in the ViT encoder.")
     parser.add_argument("--transformer_nlayers", type=int, default=8, help="Number of layers in the ViT encoder.")
     parser.add_argument("--output_scale", type=float, default=1000.0, help="Multiplier for the final energy output.")
     parser.add_argument("--energy_clamp", type=float, default=None, help="Tanh-based clamp for energy.")
-    parser.add_argument("--global_energy_weight", type=float, default=1.0, help="Weight for the global energy head score.")
 
     # Checkpoint & Logging
     parser.add_argument("--save_step", type=int, default=1000, help="Checkpoint save and validation frequency.")
@@ -192,7 +191,6 @@ def train(args):
         embed_dim=args.embed_dim,
         transformer_nheads=args.transformer_nheads,
         transformer_nlayers=args.transformer_nlayers,
-        global_energy_weight=args.global_energy_weight,
         output_scale=args.output_scale,
         energy_clamp=args.energy_clamp,
     ).to(device)
