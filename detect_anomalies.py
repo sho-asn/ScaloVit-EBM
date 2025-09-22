@@ -9,6 +9,7 @@ from glob import glob
 from ebm_model_vit import EBViTModelWrapper as EBM
 from metrics import compute_all_metrics
 from utils.utils_visualization import plot_energy_with_anomalies
+from anomaly_scoring import detect_with_ema, detect_with_cusum
 
 
 def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, stride, patch_size, image_height):
@@ -72,12 +73,12 @@ def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, 
     return final_scores[:last_covered_idx + 1]
 
 
-# --- Main Detection Logic ---
+# --- Main Detection Logic --- 
 def detect(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- 1. Load Model ---
+    # --- 1. Load Model --- 
     print(f"Loading checkpoint from {args.ckpt_path}...")
     if not os.path.exists(args.ckpt_path):
         raise FileNotFoundError(f"Checkpoint file not found at {args.ckpt_path}")
@@ -109,7 +110,7 @@ def detect(args):
     model.eval()
     print("Model loaded successfully.")
 
-    # --- 2. Establish Anomaly Threshold from Validation Data ---
+    # --- 2. Establish Anomaly Threshold from Validation Data --- 
     print(f"Calculating energy scores on validation data from {args.val_data_path}...")
     with torch.no_grad():
         all_val_scores_per_patch = []
@@ -119,12 +120,26 @@ def detect(args):
             all_val_scores_per_patch.append(scores_per_patch)
         
         val_scores_per_patch = torch.cat(all_val_scores_per_patch, dim=0)
+        # Use the mean energy of all patches in a chunk as the chunk's score
         val_scores = val_scores_per_patch.mean(dim=1).cpu().numpy()
     
-    anomaly_threshold = np.percentile(val_scores, args.threshold_percentile)
-    print(f"Anomaly threshold set to {anomaly_threshold:.4f}")
+    print(f"Tuning threshold for '{args.scoring_method}' method...")
+    if args.scoring_method == 'threshold':
+        anomaly_threshold = np.percentile(val_scores, args.threshold_percentile)
+        print(f"Static energy threshold set to {anomaly_threshold:.4f}")
+    elif args.scoring_method == 'ema':
+        _, ema_values = detect_with_ema(val_scores, alpha=args.ema_alpha)
+        anomaly_threshold = np.percentile(ema_values, args.threshold_percentile)
+        print(f"EMA threshold set to {anomaly_threshold:.4f}")
+    elif args.scoring_method == 'cusum':
+        # For CUSUM, the baseline is the expected mean of normal energies
+        cusum_baseline = np.median(val_scores)
+        # The threshold 'h' is tuned on the CUSUM values from the normal validation run
+        _, cusum_values = detect_with_cusum(val_scores, baseline=cusum_baseline, k=args.cusum_k)
+        anomaly_threshold = np.percentile(cusum_values, args.threshold_percentile)
+        print(f"CUSUM baseline set to {cusum_baseline:.4f}, threshold (h) set to {anomaly_threshold:.4f}")
 
-    # --- 3. Evaluate on Preprocessed Test Sets ---
+    # --- 3. Evaluate on Preprocessed Test Sets --- 
     is_mag_only = "mag" in args.val_data_path
     
     test_files = sorted(glob(os.path.join(args.test_data_dir, "test_*.pt")))
@@ -178,27 +193,43 @@ def detect(args):
             image_height=H # H from val_chunks shape
         )
 
-        # Ensure ground truth has the same length as the scores
-        ground_truth = ground_truth[:len(final_scores)].numpy()
+        # Ensure ground truth and scores have the same length for comparison
+        common_len = min(len(final_scores), len(ground_truth))
+        final_scores = final_scores[:common_len]
+        ground_truth = ground_truth[:common_len].numpy()
 
-        predicted_anomalies = (final_scores > anomaly_threshold).astype(int)
+        # --- Apply the selected scoring method --- 
+        if args.scoring_method == 'threshold':
+            predicted_anomalies = (final_scores > anomaly_threshold).astype(int)
+            plot_title = f"Energy Scores for {set_name}"
+            scores_to_plot = final_scores
+        elif args.scoring_method == 'ema':
+            alarms, ema_values = detect_with_ema(final_scores, alpha=args.ema_alpha, threshold=anomaly_threshold)
+            predicted_anomalies = np.array(alarms).astype(int)
+            plot_title = f"EMA({args.ema_alpha}) Scores for {set_name}"
+            scores_to_plot = ema_values
+        elif args.scoring_method == 'cusum':
+            alarms, cusum_values = detect_with_cusum(final_scores, baseline=cusum_baseline, h=anomaly_threshold, k=args.cusum_k)
+            predicted_anomalies = np.array(alarms).astype(int)
+            plot_title = f"CUSUM (h={anomaly_threshold:.2f}) Scores for {set_name}"
+            scores_to_plot = cusum_values
 
-        # --- Create directory for plots ---
+        # --- Create directory for plots --- 
         plot_dir = Path("results/plots") / set_name
         plot_dir.mkdir(parents=True, exist_ok=True)
-        plot_path = plot_dir / "energy_plot.png"
+        plot_path = plot_dir / f"score_plot_{args.scoring_method}.png"
 
-        # --- Plot energy scores ---
+        # --- Plot scores --- 
         plot_energy_with_anomalies(
-            energy_scores=final_scores,
+            energy_scores=scores_to_plot,
             threshold=anomaly_threshold,
             save_path=plot_path,
-            title=f"Energy Scores for {set_name}",
+            title=plot_title,
             ground_truth_labels=ground_truth,
         )
-        print(f"Energy plot saved to {plot_path}")
+        print(f"Scoring plot saved to {plot_path}")
         
-        # --- Calculate and Display All Metrics ---
+        # --- Calculate and Display All Metrics --- 
         metrics = compute_all_metrics(ground_truth, predicted_anomalies, final_scores)
         
         print("Computed Metrics:")
@@ -214,7 +245,19 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt_path", type=str, required=True, help="Path to the model checkpoint file.")
     parser.add_argument("--val_data_path", type=str, default="preprocessed_dataset/val_chunks_wavelet_mag.pt", help="Path to the validation data for setting the anomaly threshold.")
     parser.add_argument("--test_data_dir", type=str, default="preprocessed_dataset", help="Directory containing the preprocessed test set files (*.pt).")
-    parser.add_argument("--threshold_percentile", type=float, default=95, help="Percentile of validation scores to use as anomaly threshold.")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for processing data to avoid OOM errors.")
+    
+    # Arguments for scoring method
+    parser.add_argument("--scoring_method", type=str, default="threshold", choices=["threshold", "ema", "cusum"], help="The scoring method to use for anomaly detection.")
+    parser.add_argument("--threshold_percentile", type=float, default=99, help="Percentile of validation scores to use as anomaly threshold.")
+    
+    # EMA-specific arguments
+    parser.add_argument("--ema_alpha", type=float, default=0.1, help="Alpha smoothing factor for EMA scoring.")
+
+    # CUSUM-specific arguments
+    parser.add_argument("--cusum_k", type=float, default=0.2, help="Slack parameter (k) for CUSUM scoring.")
+
     args = parser.parse_args()
+    detect(args)
+
     detect(args)

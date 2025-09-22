@@ -49,6 +49,9 @@ def get_args():
     parser.add_argument("--time_cutoff", type=float, default=1.0, help="Flow loss decays to zero beyond t>=time_cutoff")
     parser.add_argument("--cd_neg_clamp", type=float, default=0.02, help="Clamp negative total CD below -cd_neg_clamp. 0=disable clamp.")
     parser.add_argument("--cd_trim_fraction", type=float, default=0.1, help="Fraction of highest negative energies discarded for CD (0=disable).")
+    parser.add_argument("--lambda_gp", type=float, default=0.0, help="Coefficient for Energy Gradient Penalty loss. Suggested: 1e-2.")
+    parser.add_argument("--lambda_smooth", type=float, default=0.0, help="Coefficient for latent smoothness regularizer. Suggested: 1e-4.")
+    parser.add_argument("--no_shuffle", action="store_true", help="If set, disable shuffling in the DataLoader (needed for smoothness loss).")
 
     # Gibbs Sampling for CD
     parser.add_argument("--n_gibbs", type=int, default=200, help="Number of Gibbs steps for CD.")
@@ -76,6 +79,10 @@ def get_args():
     parser.add_argument("--save_step", type=int, default=1000, help="Checkpoint save and validation frequency.")
     parser.add_argument("--log_step", type=int, default=100, help="Logging frequency.")
 
+    # Performance optimizations
+    parser.add_argument("--use_amp", action="store_true", help="Enable Automatic Mixed Precision (AMP) for training.")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of steps to accumulate gradients before performing an optimizer step.")
+
     return parser.parse_args()
 
 # --- Forward Pass --- 
@@ -91,62 +98,84 @@ def forward_all(model, flow_matcher, x_real_flow, x_real_cd, args):
         w_flow = flow_weight(t, cutoff=args.time_cutoff)
         loss_flow = torch.mean(w_flow * flow_mse)
 
-        # 2) Contrastive Divergence loss
+        # 2) Gradient Penalty loss
+        loss_gp = torch.tensor(0.0, device=device)
+        if args.lambda_gp > 0.0:
+            # The velocity vt is -grad(E(x)), so its norm squared is the gradient penalty
+            grad_norm_sq = vt.square().sum(dim=[1, 2, 3])
+            loss_gp = args.lambda_gp * grad_norm_sq.mean()
+
+        # 3) Latent Smoothness Loss
+        loss_smooth = torch.tensor(0.0, device=device)
+        # This loss requires token embeddings, which we get from the potential function
+        get_tokens_for_smoothness = args.lambda_smooth > 0.0 and args.no_shuffle
+
+        # 4) Contrastive Divergence loss
         loss_cd = torch.tensor(0.0, device=device)
         pos_energy = torch.tensor(0.0, device=device)
         neg_energy = torch.tensor(0.0, device=device)
 
-        if args.lambda_cd > 0.0:
-            pos_energy = model.potential(x_real_cd, torch.ones_like(t))
-
-            if args.split_negative:
-                B = x_real_cd.size(0)
-                half_b = B // 2
-                x_neg_init = torch.empty_like(x_real_cd)
-                x_neg_init[:half_b] = x_real_cd[:half_b]
-                x_neg_init[half_b:] = torch.randn_like(x_neg_init[half_b:])
-                at_data_mask = torch.zeros(B, dtype=torch.bool, device=device)
-                at_data_mask[:half_b] = True
+        if args.lambda_cd > 0.0 or get_tokens_for_smoothness:
+            # We need to call potential() for either CD loss or smoothness loss
+            if get_tokens_for_smoothness:
+                pos_energy, pos_embeds = model.potential(x_real_cd, torch.ones_like(t), return_tokens=True)
+                # Pool patch embeddings to get a single vector per chunk
+                chunk_vectors = pos_embeds.mean(dim=1)
+                # Calculate difference between consecutive chunk vectors in the batch
+                if chunk_vectors.shape[0] > 1:
+                    diffs = chunk_vectors[1:] - chunk_vectors[:-1]
+                    loss_smooth = args.lambda_smooth * diffs.square().mean()
             else:
-                x_neg_init = torch.randn_like(x_real_cd)
-                at_data_mask = torch.zeros(x_real_cd.size(0), dtype=torch.bool, device=device)
+                # If only doing CD loss, no need to get tokens
+                pos_energy = model.potential(x_real_cd, torch.ones_like(t), return_tokens=False)
 
-            if args.same_temperature_scheduler:
-                at_data_mask.fill_(False)
+            if args.lambda_cd > 0.0:
+                if args.split_negative:
+                    B = x_real_cd.size(0)
+                    half_b = B // 2
+                    x_neg_init = torch.empty_like(x_real_cd)
+                    x_neg_init[:half_b] = x_real_cd[:half_b]
+                    x_neg_init[half_b:] = torch.randn_like(x_neg_init[half_b:])
+                    at_data_mask = torch.zeros(B, dtype=torch.bool, device=device)
+                    at_data_mask[:half_b] = True
+                else:
+                    x_neg_init = torch.randn_like(x_real_cd)
+                    at_data_mask = torch.zeros(x_real_cd.size(0), dtype=torch.bool, device=device)
 
-            x_neg = gibbs_sampling_time_sweep(
-                x_init=x_neg_init,
-                model=model,
-                at_data_mask=at_data_mask,
-                n_steps=args.n_gibbs,
-                dt=args.dt_gibbs,
-                epsilon_max=args.epsilon_max,
-                time_cutoff=args.time_cutoff
-            )
-            neg_energy = model.potential(x_neg, torch.ones_like(t))
+                if args.same_temperature_scheduler:
+                    at_data_mask.fill_(False)
 
-            if args.cd_trim_fraction > 0.0:
-                # With per-patch energies, neg_energy is (B, N). We trim a fraction of all patch energies.
-                total_patch_energies = neg_energy.numel()
-                k = int(args.cd_trim_fraction * total_patch_energies)
-                if k > 0:
-                    # Flatten to sort all patch energies together, then trim the k highest.
-                    neg_sorted, _ = neg_energy.view(-1).sort()
-                    neg_trimmed = neg_sorted[:-k]
-                    neg_stat = neg_trimmed.mean()
+                x_neg = gibbs_sampling_time_sweep(
+                    x_init=x_neg_init,
+                    model=model,
+                    at_data_mask=at_data_mask,
+                    n_steps=args.n_gibbs,
+                    dt=args.dt_gibbs,
+                    epsilon_max=args.epsilon_max,
+                    time_cutoff=args.time_cutoff
+                )
+                neg_energy = model.potential(x_neg, torch.ones_like(t))
+
+                if args.cd_trim_fraction > 0.0:
+                    total_patch_energies = neg_energy.numel()
+                    k = int(args.cd_trim_fraction * total_patch_energies)
+                    if k > 0:
+                        neg_sorted, _ = neg_energy.view(-1).sort()
+                        neg_trimmed = neg_sorted[:-k]
+                        neg_stat = neg_trimmed.mean()
+                    else:
+                        neg_stat = neg_energy.mean()
                 else:
                     neg_stat = neg_energy.mean()
-            else:
-                neg_stat = neg_energy.mean()
 
-            cd_val = pos_energy.mean() - neg_stat
-            loss_cd = args.lambda_cd * cd_val
+                cd_val = pos_energy.mean() - neg_stat
+                loss_cd = args.lambda_cd * cd_val
 
-            if args.cd_neg_clamp > 0:
-                loss_cd = torch.maximum(loss_cd, torch.tensor(-args.cd_neg_clamp, device=device))
+                if args.cd_neg_clamp > 0:
+                    loss_cd = torch.maximum(loss_cd, torch.tensor(-args.cd_neg_clamp, device=device))
 
-    total_loss = loss_flow + loss_cd
-    return total_loss, loss_flow, loss_cd, pos_energy, neg_energy
+    total_loss = loss_flow + loss_cd + loss_gp + loss_smooth
+    return total_loss, loss_flow, loss_cd, loss_gp, loss_smooth, pos_energy, neg_energy
 
 # --- Training Loop ---
 def train(args):
@@ -158,23 +187,15 @@ def train(args):
     # Data
     print(f"Loading data...")
     train_chunks = torch.load(args.train_data_path)
-    # Assuming data is normalized to [-1, 1]
     
     if isinstance(train_chunks, list):
-        C, H, W = train_chunks[0].shape[1:]
-        print(f"Data is a list of tensors. Shape of first item: {train_chunks[0].shape}")
-        # This case needs to be handled properly, for now, we assume a single tensor
-        # You might need to concatenate them or handle the list in the dataset/loader
-        if isinstance(train_chunks, list):
-            train_chunks = torch.cat(train_chunks, dim=0)
+        train_chunks = torch.cat(train_chunks, dim=0)
 
-    else:
-        _, C, H, W = train_chunks.shape
-
+    _, C, H, W = train_chunks.shape
     print(f"Detected data shape: C={C}, H={H}, W={W}")
 
     train_dataset = TensorDataset(train_chunks, torch.zeros(train_chunks.size(0)))
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=0, pin_memory=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=not args.no_shuffle, drop_last=True, num_workers=0, pin_memory=False)
     train_datalooper = infiniteloop(train_loader)
 
     # Model
@@ -203,6 +224,9 @@ def train(args):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=get_warmup_lr_lambda(args.warmup))
     flow_matcher = ExactOptimalTransportConditionalFlowMatcher(sigma=0.0)
 
+    # AMP GradScaler
+    scaler = torch.cuda.amp.GradScaler(enabled=args.use_amp)
+
     # Resume from checkpoint if provided
     start_step = 0
     if args.resume_ckpt and os.path.exists(args.resume_ckpt):
@@ -217,24 +241,53 @@ def train(args):
     # Training
     print("Starting training...")
     last_log_time = time.time()
+    
+    # Zero gradients once before starting the loop
+    optimizer.zero_grad()
+
     for step in range(start_step, args.total_steps):
-        optimizer.zero_grad()
+        # --- Forward Pass with AMP context ---
+        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=args.use_amp):
+            x_real_flow, _ = next(train_datalooper)
+            x_real_cd, _ = next(train_datalooper)
+            x_real_flow = x_real_flow.to(device).float()
+            x_real_cd = x_real_cd.to(device).float()
 
-        x_real_flow, _ = next(train_datalooper)
-        x_real_cd, _ = next(train_datalooper)
-        x_real_flow = x_real_flow.to(device).float()
-        x_real_cd = x_real_cd.to(device).float()
+            total_loss, loss_flow, loss_cd, loss_gp, loss_smooth, pos_energy, neg_energy = forward_all(
+                model, flow_matcher, x_real_flow, x_real_cd, args
+            )
+            
+            # Scale loss for gradient accumulation
+            loss = total_loss / args.gradient_accumulation_steps
 
-        total_loss, loss_flow, loss_cd, pos_energy, neg_energy = forward_all(
-            model, flow_matcher, x_real_flow, x_real_cd, args
-        )
+        # --- Backward Pass ---
+        # scaler.scale(loss).backward() handles both AMP and non-AMP cases
+        scaler.scale(loss).backward()
 
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        optimizer.step()
-        scheduler.step()
-        ema(model, ema_model, args.ema_decay)
+        # --- Optimizer Step ---
+        if (step + 1) % args.gradient_accumulation_steps == 0:
+            # Unscale gradients before clipping
+            if args.use_amp:
+                scaler.unscale_(optimizer)
+            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            
+            # Scaler steps the optimizer
+            scaler.step(optimizer)
+            
+            # Update scaler for next iteration
+            scaler.update()
 
+            # Step the scheduler
+            scheduler.step()
+            
+            # Reset gradients for the next accumulation cycle
+            optimizer.zero_grad()
+
+            # Other updates that should happen after an optimizer step
+            ema(model, ema_model, args.ema_decay)
+
+        # --- Logging ---
         if step % args.log_step == 0:
             now = time.time()
             elapsed = now - last_log_time
@@ -243,7 +296,7 @@ def train(args):
             curr_lr = scheduler.get_last_lr()[0]
             print(
                 f"[Step {step}/{args.total_steps}] "
-                f"Loss: {total_loss.item():.4f} (Flow: {loss_flow.item():.4f}, CD: {loss_cd.item():.4f}) | "
+                f"Loss: {total_loss.item():.4f} (Flow: {loss_flow.item():.4f}, CD: {loss_cd.item():.4f}, GP: {loss_gp.item():.4f}, Smooth: {loss_smooth.item():.4f}) | "
                 f"Pos E: {pos_energy.mean().item():.2f} (std: {pos_energy.std().item():.2f}) | "
                 f"Neg E: {neg_energy.mean().item():.2f} (std: {neg_energy.std().item():.2f}) | "
                 f"LR: {curr_lr:.6f} | {sps:.2f} it/s"

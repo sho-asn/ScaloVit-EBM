@@ -182,6 +182,10 @@ def split_image_into_chunks_with_stride(image: torch.Tensor, chunk_width: int, s
     """
     batch_size, channels, height, width = image.shape
 
+    # If the image is smaller than a single chunk, no chunks can be created.
+    if width < chunk_width:
+        return torch.empty(0, channels, height, chunk_width, device=image.device)
+
     # Use unfold to create sliding window views from the images.
     # The result is (B, C, H, num_chunks, chunk_width)
     unfolded = image.unfold(3, chunk_width, stride)
