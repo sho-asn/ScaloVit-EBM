@@ -179,9 +179,10 @@ class EBViTModelWrapper(UNetModelWrapper):
         # Head for per-patch energy scores
         self.final_linear = nn.Linear(embed_dim, 1)
 
-    def potential(self, x, t):
+    def potential(self, x, t, return_tokens=False):
         """
         Computes per-patch potential V(x,t) => shape (B, N), where N is the number of patches.
+        Optionally returns the transformer token embeddings.
         Ignores the provided time and always uses a fixed dummy time.
         """
         t_dummy = dummy_time(x, value=0.5)
@@ -199,6 +200,9 @@ class EBViTModelWrapper(UNetModelWrapper):
         V = V * self.output_scale
         if self.energy_clamp is not None:
             V = soft_clamp(V, self.energy_clamp)
+        
+        if return_tokens:
+            return V, encoded
         return V
 
     def velocity(self, x, t):
