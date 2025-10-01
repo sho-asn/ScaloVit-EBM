@@ -20,16 +20,16 @@ def get_args():
     parser.add_argument("--transform_type", type=str, default="wavelet", choices=["wavelet", "stft"], help="Type of transform to use.")
     parser.add_argument("--data_dir", type=str, default="Datasets/CVACaseStudy/MFP", help="Directory of the raw .mat files.")
     parser.add_argument("--output_dir", type=str, default="preprocessed_dataset", help="Directory to save the processed files.")
-    parser.add_argument("--chunk_width", type=int, default=1024, help="Width of the output image chunks.")
+    parser.add_argument("--chunk_width", type=int, default=2048, help="Width of the output image chunks.")
     parser.add_argument("--chunk_stride", type=int, default=128, help="Stride for sliding window chunking.")
-    parser.add_argument("--patch_size", type=int, nargs=2, default=[128, 8], help="Patch size (height, width) used by the model, for labeling.")
+    parser.add_argument("--patch_size", type=int, nargs=2, default=[128, 16], help="Patch size (height, width) used by the model, for labeling.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
     parser.add_argument("--include_phase", action="store_true", help="If set, include phase in the output image. Otherwise, only magnitude is used.")
 
     # Wavelet specific args
     parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use.")
     parser.add_argument("--wavelet_scales_min", type=int, default=1, help="Minimum scale for wavelet transform.")
-    parser.add_argument("--wavelet_scales_max", type=int, default=129, help="Maximum scale for wavelet transform.")
+    parser.add_argument("--wavelet_scales_max", type=int, default=257, help="Maximum scale for wavelet transform.")
 
     # STFT specific args
     parser.add_argument("--stft_nperseg", type=int, default=62, help="Length of each segment for STFT.")
@@ -66,6 +66,18 @@ def get_ground_truth_for_signal(fault_intervals: list, signal_length: int, patch
 
 
 # --- Helper Functions for Preprocessing ---
+def chunk_1d_signal_with_stride(signal: np.ndarray, chunk_width: int, stride: int) -> np.ndarray:
+    """
+    Splits a 2D signal (L, F) into 3D chunks (num_chunks, chunk_width, F) using a sliding window.
+    """
+    L, F = signal.shape
+    chunks = []
+    for i in range(0, L - chunk_width + 1, stride):
+        chunks.append(signal[i:i+chunk_width, :])
+    if not chunks:
+        return np.empty((0, chunk_width, F), dtype=signal.dtype)
+    return np.stack(chunks, axis=0)
+
 def transform_and_chunk_signal(
     signal_np: np.ndarray,
     embedder,
@@ -86,24 +98,79 @@ def transform_and_chunk_signal(
     return split_image_into_chunks_with_stride(image, args.chunk_width, args.chunk_stride)
 
 def process_signal_list(
-    raw_signals: list, 
-    embedder, 
-    args, 
+    raw_signals: list,
+    embedder,
+    args,
     device,
     set_name: str
 ) -> torch.Tensor:
     """
     Processes a list of raw signal numpy arrays and returns a concatenated tensor of chunks.
+    This version is memory-optimized: it calculates the total size first, pre-allocates
+    a CPU tensor, and fills it iteratively to avoid high peak memory usage.
     """
-    all_chunks = []
+    if not raw_signals or all(s.shape[0] == 0 for s in raw_signals):
+        return torch.empty(0)
+
+    # --- Pass 1: Calculate total number of chunks and final tensor shape ---
+    print(f"  Calculating size for {set_name} set...")
+    total_chunks = 0
+    for signal_np in raw_signals:
+        if signal_np.shape[0] < args.chunk_width:
+            continue
+        # Calculate how many chunks this signal will produce
+        num_signal_chunks = (signal_np.shape[0] - args.chunk_width) // args.chunk_stride + 1
+        total_chunks += num_signal_chunks
+
+    if total_chunks == 0:
+        return torch.empty(0)
+
+    # Determine the shape of a single chunk (C, H, W) without processing
+    num_features = raw_signals[0].shape[1]
+    chunk_w = args.chunk_width
+    if args.transform_type == 'wavelet':
+        chunk_h = args.wavelet_scales_max - args.wavelet_scales_min
+    else: # stft
+        chunk_h = args.stft_nfft // 2 + 1
+    
+    chunk_c = num_features * 2 if args.include_phase else num_features
+
+    final_shape = (chunk_c, chunk_h, chunk_w)
+
+    # --- Pre-allocate memory on CPU ---
+    print(f"  Pre-allocating memory for {total_chunks} chunks with shape {final_shape}...")
+    all_chunks_cpu = torch.empty((total_chunks, *final_shape), dtype=torch.float32, device='cpu')
+    
+    # --- Pass 2: Process signals and fill the CPU tensor ---
+    current_pos = 0
     for i, signal_np in enumerate(raw_signals):
         print(f"  Processing {set_name} set part {i+1}/{len(raw_signals)}...")
-        chunks = transform_and_chunk_signal(signal_np, embedder, args, device)
-        all_chunks.append(chunks)
-    
-    if not all_chunks:
-        return torch.empty(0)
-    return torch.cat(all_chunks, dim=0)
+        if signal_np.shape[0] < args.chunk_width:
+            print("    Signal shorter than chunk width, skipping.")
+            continue
+
+        # Generate chunks on the target device (e.g., GPU)
+        with torch.no_grad():
+            chunks_device = transform_and_chunk_signal(signal_np, embedder, args, device)
+        
+        num_generated = chunks_device.shape[0]
+        if num_generated > 0:
+            print(f"    Generated {num_generated} chunks, moving to CPU memory.")
+            # Copy chunks from GPU to the pre-allocated CPU tensor
+            all_chunks_cpu[current_pos : current_pos + num_generated] = chunks_device.cpu()
+            current_pos += num_generated
+            # Free GPU memory
+            del chunks_device
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+        else:
+            print("    No chunks generated for this part.")
+
+    # If there was a miscalculation in the number of chunks, truncate the tensor
+    if current_pos < total_chunks:
+        all_chunks_cpu = all_chunks_cpu[:current_pos]
+
+    return all_chunks_cpu
 
 
 # --- Main Preprocessing Logic ---
@@ -137,20 +204,22 @@ def preprocess(args):
         all_train_raw.append(signal_np[:split_point, :])
         all_val_raw.append(signal_np[split_point:, :])
 
-    # --- 2. Initialize and Fit Embedder on COMBINED TRAINING DATA ---
-    combined_train_raw_np = np.concatenate(all_train_raw, axis=0)
-    print(f"Combined raw training data to fit scaler, shape: {combined_train_raw_np.shape}")
-
+    # --- 2. Initialize and Fit Embedder on Training Data ---
+    # For CWT, we no longer combine all training data into one massive array.
+    # The embedder is fitted iteratively on the list of training signals to save memory.
     if args.transform_type == 'wavelet':
+        print(f"Found {len(all_train_raw)} training signals to fit CWT scaler.")
         embedder = WAVEmbedder(
             device=device,
-            seq_len=combined_train_raw_np.shape[0],
+            seq_len=0, # seq_len is now set per-signal in transform_and_chunk_signal
             wavelet_name=args.wavelet_name,
             scales_arange=(args.wavelet_scales_min, args.wavelet_scales_max)
         )
-        print("Caching wavelet normalization parameters from all training data...")
-        init_wav_embedder(embedder, np.expand_dims(combined_train_raw_np, axis=0))
+        print("Caching wavelet normalization parameters from all training data (iteratively)...")
+        init_wav_embedder(embedder, all_train_raw)
     elif args.transform_type == 'stft':
+        combined_train_raw_np = np.concatenate(all_train_raw, axis=0)
+        print(f"Combined raw training data to fit scaler, shape: {combined_train_raw_np.shape}")
         embedder = STFTEmbedder(
             device=device,
             seq_len=combined_train_raw_np.shape[0],
@@ -215,9 +284,12 @@ def preprocess(args):
             raw_signal_np = np.delete(data[set_name], -1, axis=1)
             
             signal_len = raw_signal_np.shape[0]
-            test_chunks = transform_and_chunk_signal(raw_signal_np, embedder, args, device)
+            # Create scalogram chunks (for compatibility if needed)
+            test_chunks_scalogram = transform_and_chunk_signal(raw_signal_np, embedder, args, device)
+            # Create raw 1D signal chunks
+            test_chunks_1d = chunk_1d_signal_with_stride(raw_signal_np, args.chunk_width, args.chunk_stride)
 
-            if test_chunks.shape[0] == 0:
+            if test_chunks_scalogram.shape[0] == 0:
                 print(f"No chunks generated for {set_name}, skipping.")
                 continue
 
@@ -229,12 +301,13 @@ def preprocess(args):
 
             save_path = output_dir / f"test_{case_file}_{set_name}{file_suffix}.pt"
             torch.save({
-                'chunks': test_chunks.cpu().float(), 
+                'chunks': test_chunks_scalogram.cpu().float(), 
+                'raw_chunks': torch.from_numpy(test_chunks_1d).float(),
                 'labels': ground_truth,
                 'signal_len': signal_len,
                 'stride': args.chunk_stride
             }, save_path)
-            print(f"Saved {test_chunks.shape[0]} chunks and labels of shape {ground_truth.shape} to {save_path}")
+            print(f"Saved {test_chunks_scalogram.shape[0]} chunks and labels of shape {ground_truth.shape} to {save_path}")
 
         except (FileNotFoundError, KeyError) as e:
             print(f"Could not process {set_name} from {case_file}. Reason: {e}")
