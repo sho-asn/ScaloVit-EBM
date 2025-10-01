@@ -5,14 +5,15 @@ from pathlib import Path
 import argparse
 import os
 from glob import glob
+from scipy.ndimage import uniform_filter1d
 
 from ebm_model_vit import EBViTModelWrapper as EBM
 from metrics import compute_all_metrics
 from utils.utils_visualization import plot_energy_with_anomalies
 from anomaly_scoring import detect_with_ema, detect_with_cusum
+from img_transformations import WAVEmbedder # For on-the-fly conversion
 
-
-def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, stride, patch_size, image_height):
+def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, stride, patch_size, image_height, agg_method='max'):
     """
     Reconstructs a single 1D score timeline from scores of overlapping chunks.
 
@@ -23,6 +24,7 @@ def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, 
         stride (int): The stride of the sliding window.
         patch_size (tuple or int): The size of a patch (height, width). If int, assumes square.
         image_height (int): The height of the chunk image (e.g., number of wavelet scales).
+        agg_method (str): How to aggregate scores for overlapping patches ('max' or 'mean').
 
     Returns:
         np.ndarray: A 1D array of anomaly scores for the portion of the signal covered by the chunks.
@@ -35,50 +37,48 @@ def reconstruct_scores_from_overlapping_chunks(scores, signal_len, chunk_width, 
     patches_per_chunk_w = chunk_width // patch_width
     num_signal_patches = signal_len // patch_width
 
-    # Initialize with a very small number to correctly find the max
-    score_max = np.full(num_signal_patches, -np.inf, dtype=np.float32)
-    covered_patches = np.zeros(num_signal_patches, dtype=bool)
+    if agg_method == 'max':
+        score_agg = np.full(num_signal_patches, -np.inf, dtype=np.float32)
+    else:  # for 'mean'
+        score_sum = np.zeros(num_signal_patches, dtype=np.float32)
+        score_count = np.zeros(num_signal_patches, dtype=np.int32)
 
+    covered_patches = np.zeros(num_signal_patches, dtype=bool)
     num_chunks = scores.shape[0]
 
     for i in range(num_chunks):
-        # Reshape the flattened patch scores for this chunk back to a 2D grid
         chunk_scores_grid = scores[i].reshape((patches_per_chunk_h, patches_per_chunk_w))
-        
-        # Average scores vertically to get one score per time-patch
-        # (If patch_height == image_height, this is just a squeeze)
         time_patch_scores = chunk_scores_grid.mean(axis=0)
-        
         chunk_start_time = i * stride
         
         for j in range(patches_per_chunk_w):
-            # Calculate the global index in the final 1D score timeline
             global_patch_idx = (chunk_start_time // patch_width) + j
-            
             if global_patch_idx < num_signal_patches:
-                score_max[global_patch_idx] = np.maximum(score_max[global_patch_idx], time_patch_scores[j])
+                if agg_method == 'max':
+                    score_agg[global_patch_idx] = np.maximum(score_agg[global_patch_idx], time_patch_scores[j])
+                else:  # 'mean'
+                    score_sum[global_patch_idx] += time_patch_scores[j]
+                    score_count[global_patch_idx] += 1
                 covered_patches[global_patch_idx] = True
 
-    # Replace any scores for uncovered patches with 0
-    final_scores = np.where(covered_patches, score_max, 0)
-    
-    # Find the last patch that was actually covered by at least one chunk
+    if agg_method == 'max':
+        final_scores = np.where(covered_patches, score_agg, 0)
+    else:  # 'mean'
+        final_scores = np.divide(score_sum, score_count, out=np.zeros_like(score_sum), where=score_count != 0)
+
     if np.any(covered_patches):
         last_covered_idx = np.where(covered_patches)[0][-1]
     else:
-        # Handle case where no scores were recorded at all
         return np.array([])
 
-    # Truncate the scores and ground truth to only the parts that were covered
     return final_scores[:last_covered_idx + 1]
 
 
-# --- Main Detection Logic --- 
 def detect(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- 1. Load Model --- 
+    # --- 1. Load Model ---
     print(f"Loading checkpoint from {args.ckpt_path}...")
     if not os.path.exists(args.ckpt_path):
         raise FileNotFoundError(f"Checkpoint file not found at {args.ckpt_path}")
@@ -86,42 +86,75 @@ def detect(args):
     ckpt = torch.load(args.ckpt_path, map_location=device, weights_only=False)
     train_args = ckpt['args']
     
-    # Load validation chunks to determine model input shape
-    val_chunks = torch.load(args.val_data_path)
-    _B, C, H, W = val_chunks.shape
+    val_chunks_for_shape = torch.load(args.val_data_path)
+    if isinstance(val_chunks_for_shape, dict):
+        val_chunks_for_shape = val_chunks_for_shape['chunks']
+    _B, C, H, W = val_chunks_for_shape.shape
 
     model = EBM(
         dim=(C, H, W),
-        num_channels=train_args.num_channels,
-        num_res_blocks=train_args.num_res_blocks,
-        channel_mult=train_args.channel_mult,
-        attention_resolutions=train_args.attention_resolutions,
-        num_heads=train_args.num_heads,
-        num_head_channels=train_args.num_head_channels,
-        dropout=train_args.dropout,
-        patch_size=train_args.patch_size,
-        embed_dim=train_args.embed_dim,
-        transformer_nheads=train_args.transformer_nheads,
-        transformer_nlayers=train_args.transformer_nlayers,
-        output_scale=train_args.output_scale,
+        num_channels=train_args.num_channels, num_res_blocks=train_args.num_res_blocks,
+        channel_mult=train_args.channel_mult, attention_resolutions=train_args.attention_resolutions,
+        num_heads=train_args.num_heads, num_head_channels=train_args.num_head_channels,
+        dropout=train_args.dropout, patch_size=train_args.patch_size,
+        embed_dim=train_args.embed_dim, transformer_nheads=train_args.transformer_nheads,
+        transformer_nlayers=train_args.transformer_nlayers, output_scale=train_args.output_scale,
         energy_clamp=train_args.energy_clamp,
     ).to(device)
     model.load_state_dict(ckpt['ema_model'])
     model.eval()
     print("Model loaded successfully.")
 
-    # --- 2. Establish Anomaly Threshold from Validation Data --- 
-    print(f"Calculating energy scores on validation data from {args.val_data_path}...")
-    with torch.no_grad():
-        all_val_scores_per_patch = []
-        for i in range(0, len(val_chunks), args.batch_size):
-            batch = val_chunks[i:i+args.batch_size].to(device).float()
-            scores_per_patch = model.potential(batch, t=torch.ones(batch.size(0), device=device))
-            all_val_scores_per_patch.append(scores_per_patch)
+    # --- 2. Setup for Scoring ---
+    is_mag_only = "mag" in args.val_data_path
+    embedder = None
+    if args.use_residual_scoring:
+        print("Residual scoring enabled. Loading CWT embedder and normalization params...")
+        suffix = "_wavelet_mag" if is_mag_only else "_wavelet"
+        norm_params_path = Path(args.test_data_dir) / f"norm_params{suffix}.pt"
+        if not norm_params_path.exists():
+            raise FileNotFoundError(f"Normalization parameters not found at {norm_params_path}. Please run preprocess_data.py.")
+        norm_params = torch.load(norm_params_path)
         
-        val_scores_per_patch = torch.cat(all_val_scores_per_patch, dim=0)
-        # Use the mean energy of all patches in a chunk as the chunk's score
-        val_scores = val_scores_per_patch.mean(dim=1).cpu().numpy()
+        embedder = WAVEmbedder(
+            device=device, seq_len=W,
+            wavelet_name=args.wavelet_name, 
+            scales_arange=(args.wavelet_scales_min, args.wavelet_scales_max)
+        )
+        embedder.min_mag = norm_params['min_mag'].to(device)
+        embedder.max_mag = norm_params['max_mag'].to(device)
+        if not is_mag_only:
+            embedder.min_phase = norm_params['min_phase'].to(device)
+            embedder.max_phase = norm_params['max_phase'].to(device)
+
+    # --- 3. Establish Anomaly Threshold from Validation Data ---
+    print(f"Calculating scores on validation data from {args.val_data_path}...")
+    val_data = torch.load(args.val_data_path)
+    val_scores = []
+    with torch.no_grad():
+        val_chunks_to_process = val_data['raw_chunks'] if isinstance(val_data, dict) and args.use_residual_scoring else val_data
+
+        for i in range(0, len(val_chunks_to_process), args.batch_size):
+            batch = val_chunks_to_process[i:i+args.batch_size]
+            
+            if args.use_residual_scoring:
+                batch_np = batch.numpy()
+                residual_batch = np.empty_like(batch_np)
+                for j in range(batch_np.shape[0]):
+                    trend = uniform_filter1d(batch_np[j], size=args.detrend_window_size, axis=0, mode='nearest')
+                    residual_batch[j] = batch_np[j] - trend
+                
+                scalogram_batch = embedder.ts_to_img(torch.from_numpy(residual_batch).float().to(device))
+                if is_mag_only:
+                    scalogram_batch = scalogram_batch[:, ::2, :, :]
+                scores_input = scalogram_batch
+            else:
+                scores_input = batch.to(device).float()
+
+            scores_per_patch = model.potential(scores_input, t=torch.ones(scores_input.size(0), device=device))
+            val_scores.append(scores_per_patch.mean(dim=1).cpu())
+        
+        val_scores = torch.cat(val_scores, dim=0).numpy()
     
     print(f"Tuning threshold for '{args.scoring_method}' method...")
     if args.scoring_method == 'threshold':
@@ -132,31 +165,17 @@ def detect(args):
         anomaly_threshold = np.percentile(ema_values, args.threshold_percentile)
         print(f"EMA threshold set to {anomaly_threshold:.4f}")
     elif args.scoring_method == 'cusum':
-        # For CUSUM, the baseline is the expected mean of normal energies
         cusum_baseline = np.median(val_scores)
-        # The threshold 'h' is tuned on the CUSUM values from the normal validation run
         _, cusum_values = detect_with_cusum(val_scores, baseline=cusum_baseline, k=args.cusum_k)
         anomaly_threshold = np.percentile(cusum_values, args.threshold_percentile)
         print(f"CUSUM baseline set to {cusum_baseline:.4f}, threshold (h) set to {anomaly_threshold:.4f}")
 
-    # --- 3. Evaluate on Preprocessed Test Sets --- 
-    is_mag_only = "mag" in args.val_data_path
-    
+    # --- 4. Evaluate on Preprocessed Test Sets ---
     test_files = sorted(glob(os.path.join(args.test_data_dir, "test_*.pt")))
-    
-    # Filter files to match the model type (mag-only or mag+phase)
-    if is_mag_only:
-        print("--- Running in magnitude-only mode: selecting '*_mag.pt' test files. ---")
-        test_files = [f for f in test_files if '_mag' in Path(f).name]
-    else:
-        print("--- Running in magnitude-and-phase mode: excluding '*_mag.pt' test files. ---")
-        test_files = [f for f in test_files if '_mag' not in Path(f).name]
-
-    # Further filter out any STFT files if they exist
-    test_files = [f for f in test_files if '_stft' not in Path(f).name]
+    test_files = [f for f in test_files if ('_mag' in Path(f).name) == is_mag_only and '_stft' not in Path(f).name]
 
     if not test_files:
-        print(f"No preprocessed test files found in {args.test_data_dir} matching the model type. Please run preprocess_data.py first.")
+        print(f"No preprocessed test files found in {args.test_data_dir} matching the model type.")
         return
 
     for test_file_path in test_files:
@@ -164,41 +183,49 @@ def detect(args):
         print(f"\n--- Evaluating {set_name} ---")
         
         data = torch.load(test_file_path, weights_only=False)
-        test_chunks = data['chunks']
         ground_truth = data['labels']
         signal_len = data['signal_len']
         stride = data['stride']
 
-        if test_chunks.shape[0] == 0:
+        chunks_to_process = data['raw_chunks'] if args.use_residual_scoring else data['chunks']
+        if chunks_to_process.shape[0] == 0:
             print("No chunks in this file, skipping.")
             continue
 
+        all_test_scores_per_patch = []
         with torch.no_grad():
-            all_test_scores_per_patch = []
-            for i in range(0, len(test_chunks), args.batch_size):
-                batch = test_chunks[i:i+args.batch_size].to(device)
-                scores_per_patch = model.potential(batch, t=torch.ones(batch.size(0), device=device))
+            for i in range(0, len(chunks_to_process), args.batch_size):
+                batch = chunks_to_process[i:i+args.batch_size]
+
+                if args.use_residual_scoring:
+                    batch_np = batch.numpy()
+                    residual_batch = np.empty_like(batch_np)
+                    for j in range(batch_np.shape[0]):
+                        trend = uniform_filter1d(batch_np[j], size=args.detrend_window_size, axis=0, mode='nearest')
+                        residual_batch[j] = batch_np[j] - trend
+                    
+                    scalogram_batch = embedder.ts_to_img(torch.from_numpy(residual_batch).float().to(device))
+                    if is_mag_only:
+                        scalogram_batch = scalogram_batch[:, ::2, :, :]
+                    scores_input = scalogram_batch
+                else:
+                    scores_input = batch.to(device).float()
+
+                scores_per_patch = model.potential(scores_input, t=torch.ones(scores_input.size(0), device=device))
                 all_test_scores_per_patch.append(scores_per_patch)
             
-            test_scores_per_patch = torch.cat(all_test_scores_per_patch, dim=0)
-            test_scores_per_patch = test_scores_per_patch.cpu().numpy()
+            test_scores_per_patch = torch.cat(all_test_scores_per_patch, dim=0).cpu().numpy()
 
-        # Reconstruct the 1D timeline of scores from the overlapping chunks
         final_scores = reconstruct_scores_from_overlapping_chunks(
-            scores=test_scores_per_patch,
-            signal_len=signal_len,
-            chunk_width=W, # W from val_chunks shape
-            stride=stride,
-            patch_size=train_args.patch_size,
-            image_height=H # H from val_chunks shape
+            scores=test_scores_per_patch, signal_len=signal_len, chunk_width=W,
+            stride=stride, patch_size=train_args.patch_size, image_height=H,
+            agg_method=args.overlap_agg_method
         )
 
-        # Ensure ground truth and scores have the same length for comparison
         common_len = min(len(final_scores), len(ground_truth))
         final_scores = final_scores[:common_len]
-        ground_truth = ground_truth[:common_len].numpy()
+        ground_truth_np = ground_truth[:common_len].numpy()
 
-        # --- Apply the selected scoring method --- 
         if args.scoring_method == 'threshold':
             predicted_anomalies = (final_scores > anomaly_threshold).astype(int)
             plot_title = f"Energy Scores for {set_name}"
@@ -214,30 +241,21 @@ def detect(args):
             plot_title = f"CUSUM (h={anomaly_threshold:.2f}) Scores for {set_name}"
             scores_to_plot = cusum_values
 
-        # --- Create directory for plots --- 
         plot_dir = Path("results/plots") / set_name
         plot_dir.mkdir(parents=True, exist_ok=True)
         plot_path = plot_dir / f"score_plot_{args.scoring_method}.png"
 
-        # --- Plot scores --- 
         plot_energy_with_anomalies(
-            energy_scores=scores_to_plot,
-            threshold=anomaly_threshold,
-            save_path=plot_path,
-            title=plot_title,
-            ground_truth_labels=ground_truth,
+            energy_scores=scores_to_plot, threshold=anomaly_threshold, save_path=plot_path,
+            title=plot_title, ground_truth_labels=ground_truth_np,
         )
         print(f"Scoring plot saved to {plot_path}")
         
-        # --- Calculate and Display All Metrics --- 
-        metrics = compute_all_metrics(ground_truth, predicted_anomalies, final_scores)
+        metrics = compute_all_metrics(ground_truth_np, predicted_anomalies, final_scores)
         
         print("Computed Metrics:")
         for metric_name, metric_value in metrics.items():
-            if isinstance(metric_value, float):
-                print(f"  {metric_name}: {metric_value:.4f}")
-            else:
-                print(f"  {metric_name}: {metric_value}")
+            print(f"  {metric_name}: {metric_value:.4f}" if isinstance(metric_value, float) else f"  {metric_name}: {metric_value}")
 
 
 if __name__ == "__main__":
@@ -247,10 +265,17 @@ if __name__ == "__main__":
     parser.add_argument("--test_data_dir", type=str, default="preprocessed_dataset", help="Directory containing the preprocessed test set files (*.pt).")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for processing data to avoid OOM errors.")
     
-    # Arguments for scoring method
     parser.add_argument("--scoring_method", type=str, default="threshold", choices=["threshold", "ema", "cusum"], help="The scoring method to use for anomaly detection.")
-    parser.add_argument("--threshold_percentile", type=float, default=99, help="Percentile of validation scores to use as anomaly threshold.")
-    
+    parser.add_argument("--threshold_percentile", type=float, default=99.5, help="Percentile of validation scores to use as anomaly threshold.")
+    parser.add_argument("--overlap_agg_method", type=str, default="max", choices=["max", "mean"], help="How to aggregate scores from overlapping chunks.")
+
+    # Residual Scoring arguments
+    parser.add_argument("--use_residual_scoring", action="store_true", help="If set, perform detrending and score the residual signal.")
+    parser.add_argument("--detrend_window_size", type=int, default=256, help="Window size for the moving average filter for detrending.")
+    parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use for on-the-fly CWT.")
+    parser.add_argument("--wavelet_scales_min", type=int, default=1, help="Minimum scale for on-the-fly CWT.")
+    parser.add_argument("--wavelet_scales_max", type=int, default=129, help="Maximum scale for on-the-fly CWT.")
+
     # EMA-specific arguments
     parser.add_argument("--ema_alpha", type=float, default=0.1, help="Alpha smoothing factor for EMA scoring.")
 
@@ -258,6 +283,4 @@ if __name__ == "__main__":
     parser.add_argument("--cusum_k", type=float, default=0.2, help="Slack parameter (k) for CUSUM scoring.")
 
     args = parser.parse_args()
-    detect(args)
-
     detect(args)
