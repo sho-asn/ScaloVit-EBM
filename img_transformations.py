@@ -55,24 +55,41 @@ class WAVEmbedder(TsImgEmbedder):
         self.min_phase: Optional[torch.Tensor] = None
         self.max_phase: Optional[torch.Tensor] = None
 
-    def cache_min_max_params(self, train_data: np.ndarray) -> None:
+    def cache_min_max_params(self, train_data_list: list[np.ndarray]) -> None:
         """
-        Calculates and caches the min/max of CWT magnitude and phase for each feature.
+        Calculates and caches the min/max of CWT magnitude and phase for each feature
+        by processing a list of signals iteratively to save memory.
         """
-        real, imag = self._wav_transform_raw(train_data)
-        
-        magnitude = np.sqrt(real**2 + imag**2)
-        phase = np.arctan2(imag, real)
-        
-        num_features = magnitude.shape[1]
+        if not train_data_list:
+            return
 
-        self.min_mag = torch.tensor([np.min(magnitude[:, k, :, :]) for k in range(num_features)])
-        self.max_mag = torch.tensor([np.max(magnitude[:, k, :, :]) for k in range(num_features)])
-        self.min_phase = torch.tensor([np.min(phase[:, k, :, :]) for k in range(num_features)])
-        self.max_phase = torch.tensor([np.max(phase[:, k, :, :]) for k in range(num_features)])
+        num_features = train_data_list[0].shape[1]
+        self.min_mag = torch.full((num_features,), float('inf'))
+        self.max_mag = torch.full((num_features,), float('-inf'))
+        self.min_phase = torch.full((num_features,), float('inf'))
+        self.max_phase = torch.full((num_features,), float('-inf'))
+
+        for signal_np in train_data_list:
+            if signal_np.shape[0] == 0:
+                continue
+            
+            # Process one signal at a time
+            real, imag = self._wav_transform_raw(np.expand_dims(signal_np, axis=0))
+            
+            magnitude = np.sqrt(real**2 + imag**2)
+            phase = np.arctan2(imag, real)
+            
+            for k in range(num_features):
+                self.min_mag[k] = min(self.min_mag[k], np.min(magnitude[:, k, :, :]))
+                self.max_mag[k] = max(self.max_mag[k], np.max(magnitude[:, k, :, :]))
+                self.min_phase[k] = min(self.min_phase[k], np.min(phase[:, k, :, :]))
+                self.max_phase[k] = max(self.max_phase[k], np.max(phase[:, k, :, :]))
 
     def _wav_transform_raw(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """ Performs the CWT and returns the raw real and imaginary coefficients. """
+        # Defensively reshape to 3D (B, L, F) in case of an extra dimension
+        if data.ndim > 3:
+            data = data.reshape(-1, data.shape[-2], data.shape[-1])
         num_batches, seq_len, num_features = data.shape
 
         batch_coeffs = []
@@ -122,15 +139,14 @@ class WAVEmbedder(TsImgEmbedder):
         
         return output_image
 
-def init_wav_embedder(embedder: "WAVEmbedder", full_train_signal_np: np.ndarray) -> None:
+def init_wav_embedder(embedder: "WAVEmbedder", train_signal_list: list[np.ndarray]) -> None:
     """
     Initializes min/max values for normalization across the whole training signal.
     Args:
         embedder (WAVEmbedder): the embedder object.
-        full_train_signal_np (np.ndarray): The entire training time-series data as a numpy array.
-                                             Shape: (1, L, F) for a single batch of the full signal.
+        train_signal_list (list[np.ndarray]): A list of training time-series data numpy arrays.
     """
-    embedder.cache_min_max_params(full_train_signal_np)
+    embedder.cache_min_max_params(train_signal_list)
 
 def split_image_into_chunks(image: torch.Tensor, chunk_width: int) -> torch.Tensor:
     """
