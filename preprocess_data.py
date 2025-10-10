@@ -11,6 +11,7 @@ from img_transformations import (
     split_image_into_chunks_with_stride
 )
 from utils.utils_visualization import plot_stft_images
+from scipy.ndimage import uniform_filter1d
 
 # --- Configuration ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -25,6 +26,8 @@ def get_args():
     parser.add_argument("--patch_size", type=int, nargs=2, default=[128, 16], help="Patch size (height, width) used by the model, for labeling.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
     parser.add_argument("--include_phase", action="store_true", help="If set, include phase in the output image. Otherwise, only magnitude is used.")
+    parser.add_argument("--detrend", action="store_true", help="If set, detrend the signal by subtracting a moving average before the CWT.")
+    parser.add_argument("--detrend_window_size", type=int, default=256, help="Window size for the moving average detrending.")
 
     # Wavelet specific args
     parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use.")
@@ -87,6 +90,10 @@ def transform_and_chunk_signal(
     """
     Transforms a single raw signal numpy array to an image and splits it into chunks.
     """
+    if args.detrend:
+        trend = uniform_filter1d(signal_np, size=args.detrend_window_size, axis=0, mode='nearest')
+        signal_np = signal_np - trend  # Use residual for the transformation
+
     signal_tensor = torch.from_numpy(np.expand_dims(signal_np, axis=0)).float().to(device)
     embedder.seq_len = signal_tensor.shape[1]
     image = embedder.ts_to_img(signal_tensor)
@@ -182,6 +189,8 @@ def preprocess(args):
 
     # Define file suffix based on args
     file_suffix = f"_{args.transform_type}"
+    if args.detrend:
+        file_suffix += "_residual"
     if not args.include_phase:
         file_suffix += "_mag"
         print("--- Processing in magnitude-only mode ---")
@@ -216,7 +225,15 @@ def preprocess(args):
             scales_arange=(args.wavelet_scales_min, args.wavelet_scales_max)
         )
         print("Caching wavelet normalization parameters from all training data (iteratively)...")
-        init_wav_embedder(embedder, all_train_raw)
+        if args.detrend:
+            print(f"  Detrending training data with window size {args.detrend_window_size} before fitting scaler...")
+            all_train_residuals = []
+            for signal_np in all_train_raw:
+                trend = uniform_filter1d(signal_np, size=args.detrend_window_size, axis=0, mode='nearest')
+                all_train_residuals.append(signal_np - trend)
+            init_wav_embedder(embedder, all_train_residuals)
+        else:
+            init_wav_embedder(embedder, all_train_raw)
     elif args.transform_type == 'stft':
         combined_train_raw_np = np.concatenate(all_train_raw, axis=0)
         print(f"Combined raw training data to fit scaler, shape: {combined_train_raw_np.shape}")
