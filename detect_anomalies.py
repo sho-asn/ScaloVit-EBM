@@ -166,13 +166,21 @@ def detect(args):
         print(f"EMA threshold set to {anomaly_threshold:.4f}")
     elif args.scoring_method == 'cusum':
         cusum_baseline = np.median(val_scores)
-        _, cusum_values = detect_with_cusum(val_scores, baseline=cusum_baseline, k=args.cusum_k)
-        anomaly_threshold = np.percentile(cusum_values, args.threshold_percentile)
-        print(f"CUSUM baseline set to {cusum_baseline:.4f}, threshold (h) set to {anomaly_threshold:.4f}")
+        # Make k adaptive to the data's standard deviation
+        std_dev_val = np.std(val_scores)
+        cusum_k_value = args.cusum_k * std_dev_val 
+        
+        # Use this adaptive k to find the threshold h
+        _, val_cusum_values = detect_with_cusum(val_scores, baseline=cusum_baseline, h=float('inf'), k=cusum_k_value)
+        anomaly_threshold = np.percentile(val_cusum_values, args.threshold_percentile)
+        print(f"CUSUM baseline set to {cusum_baseline:.4f}, k set to {cusum_k_value:.4f}, threshold (h) set to {anomaly_threshold:.4f}")
 
     # --- 4. Evaluate on Preprocessed Test Sets ---
+    is_residual = "_residual" in args.val_data_path
     test_files = sorted(glob(os.path.join(args.test_data_dir, "test_*.pt")))
-    test_files = [f for f in test_files if ('_mag' in Path(f).name) == is_mag_only and '_stft' not in Path(f).name]
+    test_files = [f for f in test_files if ('_mag' in Path(f).name) == is_mag_only and \
+                                           ('_residual' in Path(f).name) == is_residual and \
+                                           '_stft' not in Path(f).name]
 
     if not test_files:
         print(f"No preprocessed test files found in {args.test_data_dir} matching the model type.")
@@ -230,16 +238,20 @@ def detect(args):
             predicted_anomalies = (final_scores > anomaly_threshold).astype(int)
             plot_title = f"Energy Scores for {set_name}"
             scores_to_plot = final_scores
+            scores_for_metrics = final_scores
         elif args.scoring_method == 'ema':
             alarms, ema_values = detect_with_ema(final_scores, alpha=args.ema_alpha, threshold=anomaly_threshold)
             predicted_anomalies = np.array(alarms).astype(int)
             plot_title = f"EMA({args.ema_alpha}) Scores for {set_name}"
             scores_to_plot = ema_values
+            scores_for_metrics = ema_values
         elif args.scoring_method == 'cusum':
-            alarms, cusum_values = detect_with_cusum(final_scores, baseline=cusum_baseline, h=anomaly_threshold, k=args.cusum_k)
+            # Note: cusum_k_value is now defined and calculated in the validation section
+            alarms, cusum_values = detect_with_cusum(final_scores, baseline=cusum_baseline, h=anomaly_threshold, k=cusum_k_value)
             predicted_anomalies = np.array(alarms).astype(int)
             plot_title = f"CUSUM (h={anomaly_threshold:.2f}) Scores for {set_name}"
             scores_to_plot = cusum_values
+            scores_for_metrics = cusum_values
 
         plot_dir = Path("results/plots") / set_name
         plot_dir.mkdir(parents=True, exist_ok=True)
@@ -251,7 +263,7 @@ def detect(args):
         )
         print(f"Scoring plot saved to {plot_path}")
         
-        metrics = compute_all_metrics(ground_truth_np, predicted_anomalies, final_scores)
+        metrics = compute_all_metrics(ground_truth_np, predicted_anomalies, scores_for_metrics)
         
         print("Computed Metrics:")
         for metric_name, metric_value in metrics.items():
