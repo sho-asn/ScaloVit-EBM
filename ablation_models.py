@@ -4,7 +4,7 @@
 import torch
 import torch.nn as nn
 import inspect
-from ebm_model_vit import PatchEmbed, dummy_time # Reuse helpers from your original file
+from scalovit.models.ebm_vit import PatchEmbed, dummy_time  # Reuse helpers from packaged model
 from torchcfm.models.unet.unet import UNetModelWrapper
 
 # --- Helper function to filter kwargs ---

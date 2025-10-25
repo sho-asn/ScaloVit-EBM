@@ -1,5 +1,4 @@
 \documentclass{article}
-
 % if you need to pass options to natbib, use, e.g.:
 %     \PassOptionsToPackage{numbers, compress}{natbib}
 % before loading neurips_2024
@@ -37,6 +36,7 @@
 \usepackage{subcaption}
 \usepackage{adjustbox}
 \usepackage{placeins}
+\usepackage{pdfpages}
 
 \makeatletter
 \renewcommand{\@noticestring}{}
@@ -55,6 +55,12 @@
 }
 
 \begin{document}
+
+\pagenumbering{gobble} % Suppress page numbering
+\onecolumn
+\input{title/title.tex}
+\newpage
+
 \maketitle
 
 \begin{abstract}
@@ -579,13 +585,17 @@ On a realistic three-phase flow benchmark, ScaloVit-EBM is competitive with or s
 Limitations include reduced sensitivity to gradually evolving faults, dependence on chunk length and preprocessing, and limited channel-level attribution. These motivate extensions toward hybrid recurrent–attention architectures for multi-scale dynamics, hierarchical and channel-aware attribution mechanisms, and adaptive, streaming deployment to handle nonstationarity.
 
 \section*{Acknowledgments}
+\addcontentsline{toc}{section}{Acknowledgments}
 We would like to express our sincere gratitude to our main supervisor, Dr. Loo Junn Yong, and co-supervisor, Dr. Ting Chee Ming, for their invaluable guidance and support throughout this research. We also extend our thanks to Tew Hwa Hui for the fruitful discussions and cooperation.
 This work made use of the Three-Phase Flow Facility dataset, generously provided by Cranfield University \citep{cao_mba_lao_samuel_2015}. The implementation of our energy-based model is adapted from the official Energy Matching codebase provided by Balcerak et al. in their public repository \citep{balcerak2025energymatchingunifyingflow}. Furthermore, our signal preprocessing methodology was informed by the techniques presented in the ImagenTime project by \cite{naiman_berman_pemper_arbiv_fadlon_azencot_2024}. 
 
 \bibliographystyle{plainnat}
+\addcontentsline{toc}{section}{References}
 \bibliography{references}
 
+\newpage
 \section*{Appendix}
+\addcontentsline{toc}{section}{Appendix}
 \input{appendices/appendix.tex}
 
 \end{document}

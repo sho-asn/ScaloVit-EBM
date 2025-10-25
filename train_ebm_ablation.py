@@ -11,15 +11,15 @@ import argparse
 import numpy as np
 
 # --- Import all model types ---
-from ebm_model_vit import EBViTModelWrapper as PatchBasedEBM
+from scalovit.models import EBViTModelWrapper as PatchBasedEBM
 from ablation_models import ImageBased_EBViTModelWrapper, ConvHead_EBMWrapper
 
-from ebm_utils import (
-    flow_weight, 
-    gibbs_sampling_time_sweep, 
-    ema, 
+from scalovit.utils import (
+    flow_weight,
+    gibbs_sampling_time_sweep,
+    ema,
     infiniteloop,
-    get_warmup_lr_lambda
+    get_warmup_lr_lambda,
 )
 
 # --- Dependency Check ---
@@ -117,8 +117,30 @@ def forward_all(model, flow_matcher, x_real_flow, x_real_cd, args):
 
             if args.lambda_cd > 0.0:
                 # ... (rest of CD logic is the same)
-                x_neg_init = torch.randn_like(x_real_cd)
-                x_neg = gibbs_sampling_time_sweep(x_init=x_neg_init, model=model, n_steps=args.n_gibbs, dt=args.dt_gibbs, epsilon_max=args.epsilon_max, time_cutoff=args.time_cutoff)
+                if args.split_negative:
+                    batch_size = x_real_cd.size(0)
+                    half_b = batch_size // 2
+                    x_neg_init = torch.empty_like(x_real_cd)
+                    x_neg_init[:half_b] = x_real_cd[:half_b]
+                    x_neg_init[half_b:] = torch.randn_like(x_neg_init[half_b:])
+                    at_data_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
+                    at_data_mask[:half_b] = True
+                else:
+                    x_neg_init = torch.randn_like(x_real_cd)
+                    at_data_mask = torch.zeros(x_real_cd.size(0), dtype=torch.bool, device=device)
+
+                if args.same_temperature_scheduler:
+                    at_data_mask.fill_(False)
+
+                x_neg = gibbs_sampling_time_sweep(
+                    x_init=x_neg_init,
+                    model=model,
+                    at_data_mask=at_data_mask,
+                    n_steps=args.n_gibbs,
+                    dt=args.dt_gibbs,
+                    epsilon_max=args.epsilon_max,
+                    time_cutoff=args.time_cutoff,
+                )
                 neg_energy = model.potential(x_neg, torch.ones_like(t))
                 cd_val = pos_energy.mean() - neg_energy.mean()
                 loss_cd = args.lambda_cd * cd_val

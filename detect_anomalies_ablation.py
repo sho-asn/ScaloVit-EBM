@@ -14,13 +14,13 @@ import json
 import pandas as pd
 
 # Import all model types
-from ebm_model_vit import EBViTModelWrapper as PatchBasedEBM
+from scalovit.models import EBViTModelWrapper as PatchBasedEBM
 from ablation_models import ImageBased_EBViTModelWrapper, ConvHead_EBMWrapper
 
-from metrics import compute_all_metrics, compute_metrics_from_cm, calculate_roc_auc
-from utils.utils_visualization import plot_energy_with_anomalies
-from anomaly_scoring import detect_with_ema, detect_with_cusum
-from img_transformations import WAVEmbedder
+from scalovit.metrics import compute_all_metrics, compute_metrics_from_cm, calculate_roc_auc
+from scalovit.scoring import detect_with_ema, detect_with_cusum
+from scalovit.transforms import WAVEmbedder
+from scalovit.utils.visualization import plot_energy_with_anomalies
 
 # --- New Reconstruction function for Image-Based scores ---
 def reconstruct_from_chunk_scores(scores, signal_len, chunk_width, stride, patch_width, agg_method='max'):
