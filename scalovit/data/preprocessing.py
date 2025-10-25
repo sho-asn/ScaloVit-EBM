@@ -37,7 +37,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--detrend_window_size", type=int, default=4096, help="Window size for the moving average detrending.")
     parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use.")
     parser.add_argument("--wavelet_scales_min", type=int, default=1, help="Minimum scale for wavelet transform.")
-    parser.add_argument("--wavelet_scales_max", type=int, default=257, help="Maximum scale for wavelet transform.")
+    parser.add_argument("--wavelet_scales_max", type=int, default=129, help="Maximum scale for wavelet transform.")
     parser.add_argument("--stft_nperseg", type=int, default=62, help="Length of each segment for STFT.")
     parser.add_argument("--stft_noverlap", type=int, default=31, help="Number of points to overlap between segments for STFT.")
     parser.add_argument("--stft_nfft", type=int, default=62, help="Length of the FFT used for STFT.")
