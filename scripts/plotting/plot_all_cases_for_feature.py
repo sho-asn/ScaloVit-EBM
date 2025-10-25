@@ -1,5 +1,10 @@
-
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
 import scipy.io as scio
 import numpy as np
 import matplotlib.pyplot as plt

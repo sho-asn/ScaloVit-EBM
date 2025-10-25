@@ -1,9 +1,15 @@
+import argparse
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
-import argparse
-import os
 
 from ebm_model_vit import EBViTModelWrapper as EBM
 

@@ -1,9 +1,15 @@
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import argparse
 import os
-from pathlib import Path
 import scipy.io as scio
 import numpy as np
 

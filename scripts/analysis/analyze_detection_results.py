@@ -1,8 +1,19 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import argparse
+import json
 import os
+import sys
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
+import argparse
+
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from matplotlib import pyplot as plt
 
 def plot_energy_distribution(df, output_filename):
     """

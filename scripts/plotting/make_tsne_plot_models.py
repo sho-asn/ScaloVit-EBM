@@ -12,7 +12,7 @@ import torch
 from sklearn.manifold import TSNE
 from torch.utils.data import DataLoader
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 LSTM_SRC = REPO_ROOT / "LSTM-AutoEncoder-Unsupervised-Anomaly-Detection-master" / "src"
 PATCHTRAD_ROOT = REPO_ROOT / "PatchTrAD-main"
 UTILS_ROOT = REPO_ROOT / "utils"

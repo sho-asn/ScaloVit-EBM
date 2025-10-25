@@ -1,9 +1,15 @@
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
 import numpy as np
 import scipy.io as scio
 from scipy.ndimage import uniform_filter1d
 import pywt
 import matplotlib.pyplot as plt
-from pathlib import Path
 
 def create_workflow_plots():
     """
