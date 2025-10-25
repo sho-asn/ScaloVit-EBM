@@ -1,18 +1,16 @@
 # ScaloVit-EBM Repository
 
-This repository accompanies the paper **“ScaloVit-EBM: Localized Energy-Based Anomaly Detection on Time–Frequency Scalograms”**. It contains the code needed to preprocess the Cranfield three-phase flow dataset, train the ScaloVit-EBM model, reproduce ablations, and regenerate the figures and tables that appear in the manuscript.
+This repository accompanies the paper **“ScaloVit-EBM: Localized Energy-Based Anomaly Detection on Time–Frequency Scalograms”**. It contains the code needed to preprocess the Cranfield three-phase flow dataset, train the ScaloVit-EBM model, and run the evaluation pipelines described in the manuscript.
 
 ## Repository Layout
 
-- `preprocess_data.py`, `img_transformations.py`: data loading, detrending, and CWT scalogram generation.
-- `train_ebm.py`, `train_ebm_ablation.py`: training entry points for the main FM-only model and the CD-augmented ablation.
-- `detect_anomalies.py`, `detect_anomalies_ablation.py`, `anomaly_scoring.py`: inference, anomaly scoring, and metric computation.
-- `ebm_model_vit.py`, `ebm_utils.py`, `metrics.py`, `ablation_models.py`: model definitions and shared utilities.
-- `scripts/analysis/`: lightweight notebooks-in-script form for metric aggregation and qualitative analysis.
-- `scripts/plotting/`: scripts to regenerate figures used in the paper (scalograms, t-SNE plots, workflow diagrams, etc.).
-- `Notebooks/`: exploratory notebooks referenced during development (optional).
-- `paper/`: LaTeX source, figures, and bibliography for the manuscript.
-- `resources/`: literature survey notes cited in the paper.
+- `scalovit/`: Python package containing models, data preprocessing helpers, evaluation utilities, and transforms used in the paper.
+- `preprocess_data.py`: CLI wrapper that calls `scalovit.data.preprocessing.preprocess`.
+- `train_ebm.py`, `train_ebm_ablation.py`: training entry points for the main model and ablation variants (using `scalovit.training.loop`).
+- `detect_anomalies.py`, `detect_anomalies_ablation.py`: evaluation entry points backed by `scalovit.detection.pipeline`.
+- `paper/`: LaTeX source, final PDF, and supporting materials for the manuscript.
+- `requirements.txt`: Python dependency specification.
+- `README.md`: this file.
 
 ## Setup
 
@@ -26,7 +24,7 @@ python -m pip install -r requirements.txt
 ## Data Preparation
 
 1. Download the Cranfield three-phase flow facility dataset (CVACaseStudy/MFP).
-2. Place the `.mat` files under `Datasets/CVACaseStudy/MFP/` (this folder is ignored by git).
+2. Place the `.mat` files under `Datasets/CVACaseStudy/MFP/` (create the directory locally; it is not tracked in this repository).
 3. Run preprocessing to detrend signals, generate CWT scalograms, and save chunked tensors. Example command (adjust paths/flags as needed):
 
 ```bash
@@ -67,25 +65,10 @@ python train_ebm_ablation.py --lambda_cd 0.001 --output_dir results/ebm_cd
 python detect_anomalies_ablation.py --ckpt path/to/cd_checkpoint.pt --output_dir results/ebm_cd_detection
 ```
 
-Per-signal anomaly scoring utilities live in `anomaly_scoring.py`, and shared evaluation metrics are in `metrics.py`.
+Per-signal scoring and metrics utilities are exposed through `scalovit.scoring` and `scalovit.metrics`.
+## Regenerating Figures and Baselines
 
-## Regenerating Figures and Tables
-
-All figure-generation scripts live under `scripts/plotting/`. Run them from the repository root once preprocessing and model evaluation outputs are available.
-
-Examples:
-
-```bash
-python scripts/plotting/create_workflow_diagram_plots.py
-python scripts/plotting/make_tsne_plot.py --ckpt path/to/checkpoint.pt
-python scripts/analysis/analyze_detection_results.py results/ebm_detection/energy_scores.csv
-```
-
-Each script prints its required inputs and the destination paths for generated plots.
-
-## Baseline Reproduction
-
-- **PatchTrAD** and **LSTM EncDec-AD** are referenced but not bundled. Clone their official repositories if you wish to rerun those baselines and place them alongside this project (the scripts assume relative paths).
+The artefact branch focuses on core training and evaluation code. Plotting scripts and external baseline wrappers have been intentionally omitted; please refer to the full development repository if you need to recreate individual figures or baseline comparisons.
 
 ## Paper
 

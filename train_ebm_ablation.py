@@ -11,8 +11,11 @@ import argparse
 import numpy as np
 
 # --- Import all model types ---
-from scalovit.models import EBViTModelWrapper as PatchBasedEBM
-from ablation_models import ImageBased_EBViTModelWrapper, ConvHead_EBMWrapper
+from scalovit.models import (
+    EBViTModelWrapper as PatchBasedEBM,
+    ImageBased_EBViTModelWrapper,
+    ConvHead_EBMWrapper,
+)
 
 from scalovit.utils import (
     flow_weight,
