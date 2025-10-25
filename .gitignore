@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.venv/
+.python-version
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data and outputs (do not commit datasets/results)
+Datasets/
+preprocessed_dataset/
+results/
+media/
+
+# Third-party or auxiliary repositories (keep as external references)
+EnergyMatching/
+ImagenTime/
+LSTM-AutoEncoder-Unsupervised-Anomaly-Detection-master/
+PatchTrAD-main/
+NeurIPS_2024__1_/
+
+# Node/JS (if any tools/scripts present)
+node_modules/
+
+# Misc
+.todo
