@@ -112,3 +112,9 @@ Chunking/representation used in preprocessing:
 - chunk_width=2048, chunk_stride=64
 - detrend_window_size=4096, wavelet_scales_max=129
 - patch_size=[128, 8] (frequency × time), magnitude-only
+
+## References
+
+- Energy Matching (the training framework & objective used here): Balcerak et al., “Energy Matching: Unifying Flow Matching and Energy-Based Models for Generative Modeling,” 2025. arXiv:2504.10612.
+- LSTM EncDec-AD baseline (ablation reference): Malhotra et al., “LSTM-based Encoder-Decoder for Multi-sensor Anomaly Detection,” 2016. arXiv:1607.00148.
+- PatchTrAD baseline (ablation reference): Vilhes et al., “PatchTrAD: A patch-based transformer focusing on patch-wise reconstruction error for time series anomaly detection,” 2025. arXiv:2504.08827.
