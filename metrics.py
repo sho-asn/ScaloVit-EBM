@@ -55,6 +55,28 @@ def calculate_roc_auc(ground_truth: np.ndarray, scores: np.ndarray) -> float:
         return 0.0
     return roc_auc_score(ground_truth, scores)
 
+def compute_metrics_from_cm(tp: int, tn: int, fp: int, fn: int) -> Dict[str, Any]:
+    """Computes derived metrics from the components of a confusion matrix."""
+    accuracy = calculate_accuracy(tp, tn, fp, fn)
+    sensitivity = calculate_sensitivity(tp, fn)
+    specificity = calculate_specificity(tn, fp)
+    fpr = calculate_fpr(fp, tn)
+    precision = calculate_precision(tp, fp)
+    f1 = calculate_f1_score(precision, sensitivity)
+
+    return {
+        "TP": tp,
+        "TN": tn,
+        "FP": fp,
+        "FN": fn,
+        "Accuracy": accuracy,
+        "Sensitivity (Recall/TPR)": sensitivity,
+        "Specificity (TNR)": specificity,
+        "FPR": fpr,
+        "Precision": precision,
+        "F1 Score": f1,
+    }
+
 def compute_all_metrics(ground_truth: np.ndarray, predictions: np.ndarray, scores: np.ndarray) -> Dict[str, Any]:
     """
     Computes and returns a dictionary of all relevant classification metrics.
@@ -69,25 +91,9 @@ def compute_all_metrics(ground_truth: np.ndarray, predictions: np.ndarray, score
     """
     tp, tn, fp, fn = get_confusion_matrix_components(ground_truth, predictions)
     
-    accuracy = calculate_accuracy(tp, tn, fp, fn)
-    sensitivity = calculate_sensitivity(tp, fn)
-    specificity = calculate_specificity(tn, fp)
-    fpr = calculate_fpr(fp, tn)
-    precision = calculate_precision(tp, fp)
-    f1 = calculate_f1_score(precision, sensitivity)
-    roc_auc = calculate_roc_auc(ground_truth, scores)
+    metrics = compute_metrics_from_cm(tp, tn, fp, fn)
     
-    metrics = {
-        "TP": tp,
-        "TN": tn,
-        "FP": fp,
-        "FN": fn,
-        "Accuracy": accuracy,
-        "Sensitivity (Recall/TPR)": sensitivity,
-        "Specificity (TNR)": specificity,
-        "FPR": fpr,
-        "Precision": precision,
-        "F1 Score": f1,
-        "ROC_AUC": roc_auc
-    }
+    roc_auc = calculate_roc_auc(ground_truth, scores)
+    metrics["ROC_AUC"] = roc_auc
+    
     return metrics

@@ -64,10 +64,10 @@ def plot_energy_with_anomalies(
         for start, end in regions[1:]:
             plt.axvspan(start, end + 1, color="red", alpha=0.3)
 
-    plt.title(title)
-    plt.xlabel("Chunk Index")
-    plt.ylabel("Energy Score")
-    plt.legend()
+    plt.title(title, fontsize=16)
+    plt.xlabel("Chunk Index", fontsize=14)
+    plt.ylabel("Energy Score", fontsize=14)
+    plt.legend(fontsize=12)
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(save_path)
@@ -145,3 +145,77 @@ def plot_stft_images(
     plt.close()
     print(f"Saved STFT plot to {save_path}")
 
+def plot_scalogram_from_file(
+    file_path: str,
+    save_dir: str,
+    chunk_index: int = 0,
+    feature_index: int = 0,
+):
+    """
+    Loads a data file, extracts a specific chunk and feature, and plots its scalogram.
+
+    Args:
+        file_path (str): Path to the .pt file containing wavelet-transformed chunks.
+        save_dir (str): Directory where the plot image will be saved.
+        chunk_index (int): Index of the chunk to plot from the file.
+        feature_index (int): Index of the original feature to visualize.
+    """
+    try:
+        # --- 1. Data Loading ---
+        data = torch.load(file_path, map_location='cpu')
+        # Handle both dict (test sets) and tensor (train/val sets) formats
+        if isinstance(data, dict):
+            chunks = data['chunks']
+        else:
+            chunks = data
+        
+        if not isinstance(chunks, torch.Tensor) or chunks.dim() != 4:
+            print(f"Error: Loaded data is not a valid 4D tensor of chunks.")
+            return
+
+        if chunk_index >= len(chunks):
+            print(f"Error: chunk_index {chunk_index} is out of bounds for {len(chunks)} chunks.")
+            return
+
+        # --- 2. Data Extraction ---
+        # Select the specific chunk: shape (C, H, W)
+        the_chunk = chunks[chunk_index]
+        
+        # Channels are interleaved [mag_f0, phase_f0, mag_f1, phase_f1, ...]
+        # We want the magnitude channel for the specified feature.
+        magnitude_channel_index = 2 * feature_index
+        
+        if magnitude_channel_index >= the_chunk.shape[0]:
+            print(f"Error: feature_index {feature_index} is out of bounds for the number of features.")
+            return
+            
+        # Extract the 2D scalogram data: shape (H, W)
+        scalogram = the_chunk[magnitude_channel_index].numpy()
+        
+        # --- 3. Plotting ---
+        fig, ax = plt.subplots(figsize=(12, 6))
+        im = ax.imshow(scalogram, aspect='auto', cmap='viridis', origin='lower')
+        
+        ax.set_xlabel("Time Step in Chunk")
+        ax.set_ylabel("Wavelet Scale")
+        
+        file_name = Path(file_path).name
+        title = f"Scalogram (Magnitude)\nFile: {file_name}, Chunk: {chunk_index}, Feature: {feature_index}"
+        ax.set_title(title)
+        
+        fig.colorbar(im, ax=ax, label="Normalized Magnitude")
+        
+        # --- 4. Saving ---
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        save_path = Path(save_dir) / f"scalogram_{Path(file_path).stem}_c{chunk_index}_f{feature_index}.png"
+        
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close(fig)
+        
+        print(f"Scalogram plot saved to {save_path}")
+
+    except FileNotFoundError:
+        print(f"Error: Data file not found at {file_path}")
+    except Exception as e:
+        print(f"An error occurred: {e}")

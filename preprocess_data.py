@@ -22,12 +22,12 @@ def get_args():
     parser.add_argument("--data_dir", type=str, default="Datasets/CVACaseStudy/MFP", help="Directory of the raw .mat files.")
     parser.add_argument("--output_dir", type=str, default="preprocessed_dataset", help="Directory to save the processed files.")
     parser.add_argument("--chunk_width", type=int, default=2048, help="Width of the output image chunks.")
-    parser.add_argument("--chunk_stride", type=int, default=128, help="Stride for sliding window chunking.")
-    parser.add_argument("--patch_size", type=int, nargs=2, default=[128, 16], help="Patch size (height, width) used by the model, for labeling.")
+    parser.add_argument("--chunk_stride", type=int, default=64, help="Stride for sliding window chunking.")
+    parser.add_argument("--patch_size", type=int, nargs=2, default=[128, 8], help="Patch size (height, width) used by the model, for labeling.")
     parser.add_argument("--train_split_ratio", type=float, default=0.8, help="Ratio of data to use for training.")
     parser.add_argument("--include_phase", action="store_true", help="If set, include phase in the output image. Otherwise, only magnitude is used.")
     parser.add_argument("--detrend", action="store_true", help="If set, detrend the signal by subtracting a moving average before the CWT.")
-    parser.add_argument("--detrend_window_size", type=int, default=256, help="Window size for the moving average detrending.")
+    parser.add_argument("--detrend_window_size", type=int, default=4096, help="Window size for the moving average detrending.")
 
     # Wavelet specific args
     parser.add_argument("--wavelet_name", type=str, default="morl", help="Name of the wavelet to use.")

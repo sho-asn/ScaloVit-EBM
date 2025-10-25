@@ -7,8 +7,10 @@ import os
 from glob import glob
 from scipy.ndimage import uniform_filter1d
 
+import pandas as pd
+import json
 from ebm_model_vit import EBViTModelWrapper as EBM
-from metrics import compute_all_metrics
+from metrics import compute_all_metrics, compute_metrics_from_cm, calculate_roc_auc
 from utils.utils_visualization import plot_energy_with_anomalies
 from anomaly_scoring import detect_with_ema, detect_with_cusum
 from img_transformations import WAVEmbedder # For on-the-fly conversion
@@ -186,6 +188,19 @@ def detect(args):
         print(f"No preprocessed test files found in {args.test_data_dir} matching the model type.")
         return
 
+    # Create threshold info dict for reporting
+    threshold_info = {
+        "value": float(anomaly_threshold),
+        "percentile": args.threshold_percentile,
+        "method": args.scoring_method
+    }
+
+    # Initialize results dict with threshold info
+    all_results = {"threshold": threshold_info}
+    total_tp, total_tn, total_fp, total_fn = 0, 0, 0, 0
+    all_ground_truth = []
+    all_final_scores = []
+
     for test_file_path in test_files:
         set_name = Path(test_file_path).stem
         print(f"\n--- Evaluating {set_name} ---")
@@ -253,7 +268,7 @@ def detect(args):
             scores_to_plot = cusum_values
             scores_for_metrics = cusum_values
 
-        plot_dir = Path("results/plots") / set_name
+        plot_dir = Path(args.output_dir) / set_name
         plot_dir.mkdir(parents=True, exist_ok=True)
         plot_path = plot_dir / f"score_plot_{args.scoring_method}.png"
 
@@ -263,11 +278,58 @@ def detect(args):
         )
         print(f"Scoring plot saved to {plot_path}")
         
+        # --- Save scores to CSV if requested ---
+        if args.save_scores:
+            df_data = {
+                'index': np.arange(len(ground_truth_np)),
+                'ground_truth': ground_truth_np,
+                'score': scores_for_metrics,
+                'prediction': predicted_anomalies
+            }
+            scores_df = pd.DataFrame(df_data)
+            csv_save_path = plot_dir / f"scores_{args.scoring_method}.csv"
+            scores_df.to_csv(csv_save_path, index=False)
+            print(f"Scores saved to {csv_save_path}")
+
         metrics = compute_all_metrics(ground_truth_np, predicted_anomalies, scores_for_metrics)
+        all_results[set_name] = metrics
+
+        # Accumulate for overall results
+        total_tp += metrics["TP"]
+        total_tn += metrics["TN"]
+        total_fp += metrics["FP"]
+        total_fn += metrics["FN"]
+        all_ground_truth.append(ground_truth_np)
+        all_final_scores.append(scores_for_metrics)
         
         print("Computed Metrics:")
         for metric_name, metric_value in metrics.items():
             print(f"  {metric_name}: {metric_value:.4f}" if isinstance(metric_value, float) else f"  {metric_name}: {metric_value}")
+
+    # --- 5. Compute Overall Metrics and Save Results ---
+    if all_results:
+        print("\n--- Computing Overall Metrics ---")
+        overall_metrics = compute_metrics_from_cm(total_tp, total_tn, total_fp, total_fn)
+        
+        # Calculate overall ROC_AUC
+        overall_gt = np.concatenate(all_ground_truth)
+        overall_scores = np.concatenate(all_final_scores)
+        overall_roc_auc = calculate_roc_auc(overall_gt, overall_scores)
+        overall_metrics["ROC_AUC"] = overall_roc_auc
+        
+        all_results["overall"] = overall_metrics
+        
+        print("Overall Metrics:")
+        for metric_name, metric_value in overall_metrics.items():
+            print(f"  {metric_name}: {metric_value:.4f}" if isinstance(metric_value, float) else f"  {metric_name}: {metric_value}")
+
+        # Save to JSON
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        json_output_path = output_dir / "detection_metrics.json"
+        with open(json_output_path, 'w') as f:
+            json.dump(all_results, f, indent=4)
+        print(f"\nAll results saved to {json_output_path}")
 
 
 if __name__ == "__main__":
@@ -293,6 +355,9 @@ if __name__ == "__main__":
 
     # CUSUM-specific arguments
     parser.add_argument("--cusum_k", type=float, default=0.2, help="Slack parameter (k) for CUSUM scoring.")
+
+    parser.add_argument("--output_dir", type=str, default="results/detection_run", help="Directory to save all outputs (plots, scores, and metrics).")
+    parser.add_argument("--save_scores", action="store_true", help="If set, save the computed scores and labels to a CSV file for each test set.")
 
     args = parser.parse_args()
     detect(args)
